@@ -212,8 +212,14 @@ const OLDTOWN_START=16;                               // by>=16: old town (west)
 const HILLS_START=20;                                 // by>=20: hills (west) / forest (east)
 const OCEAN_START=13;                                 // bx>=13 (3+ columns off the coast) is deep, un-bridged open sea
 
+// world data (islandBlocks populated below, before district() is ever called — see genCity())
+const islandBlocks=new Set();       // "bx,by" — tiny landmasses punched into the open ocean
+const islands=[];                   // {x,y} world-space center of each island, filled in genCity()
+
 // district lookup by block coords — checked highest by-band first since they're later additions
 function district(bx,by){
+  const key=bx+','+by;
+  if(islandBlocks.has(key)) return 'island';
   if(by>=HILLS_START) return bx<12?'hills':'forest';
   if(by>=OLDTOWN_START) return bx<12?'oldtown':'wasteland';
   if(by>=RURAL_START) return 'rural';
@@ -231,7 +237,8 @@ const DIST_PAL={
   oldtown:['#8a4a34','#9c5a3c','#a8654a','#7c4028','#946048'],    // warm brick & terracotta
   wasteland:['#8a7a5a','#9c8a64','#766a4c','#a89468','#6e6248'],  // sun-bleached rust & tan
   hills:['#eee6d8','#e2d8c4','#f0ead8','#d8ceb8','#ece0c8'],      // bright wealthy cream/stone
-  forest:['#4a5a3c','#3c4a30','#566448','#42502e','#5a6a4a']      // dark cabin green/brown
+  forest:['#4a5a3c','#3c4a30','#566448','#42502e','#5a6a4a'],     // dark cabin green/brown
+  island:['#c9a468','#d4b478','#bfa060']                          // sandy getaway huts
 };
 const NEON_HUES=['#ff2fae','#2ff0ff','#ffea2f','#5cff6a','#ff6a2f'];
 const NEON_TXT=['BAR','24HR','CASH','HOTEL','EAT','OPEN','LIQUOR','ARCADE','MOTEL','CLUB'];
@@ -269,34 +276,61 @@ function genCity(){
       riverBlocks.add((col+1)+','+by);
     }
   }
+  // scatter small islands + standalone docks through the open ocean (own RNG stream, like the river)
+  const oceanDockBlocks=new Set();
+  {
+    const Ri=mulberry(90210);
+    let tries=0;
+    while(islands.length<7 && tries<400){
+      tries++;
+      const bx=OCEAN_START+1+Math.floor(Ri()*(N-OCEAN_START-3));
+      const by=1+Math.floor(Ri()*(N-2));
+      const key=bx+','+by;
+      let tooClose=false;
+      for(let dx=-1;dx<=1;dx++)for(let dy=-1;dy<=1;dy++) if(islandBlocks.has((bx+dx)+','+(by+dy))) tooClose=true;
+      if(tooClose)continue;
+      islandBlocks.add(key);
+      islands.push({x:bx*C0+ROAD+BLOCK/2, y:by*C0+ROAD+BLOCK/2});
+    }
+    for(const key of islandBlocks){
+      const[ibx,iby]=key.split(',').map(Number);
+      for(const[nx,ny]of[[ibx+1,iby],[ibx-1,iby],[ibx,iby+1],[ibx,iby-1]]){
+        const nk=nx+','+ny;
+        if(nx>=10&&!islandBlocks.has(nk)&&!oceanDockBlocks.has(nk)&&Ri()<0.6){ oceanDockBlocks.add(nk); break; }
+      }
+    }
+  }
   for(let bx=0;bx<N;bx++)for(let by=0;by<N;by++){
     const key=bx+','+by, d=district(bx,by);
     const x0=bx*C0+ROAD, y0=by*C0+ROAD;
     blockMap.set(key,[]);
-    // water & docks on far harbor edge, plus the rural river/lake
-    if(bx>=10){ waterBlocks.add(key); if(bx>=OCEAN_START) oceanBlocks.add(key); continue; }
+    // water & docks on far harbor edge, plus the rural river/lake — except the little islands/piers punched into it
+    if(bx>=10&&!islandBlocks.has(key)){
+      if(oceanDockBlocks.has(key)){ dockBlocks.add(key); continue; }
+      waterBlocks.add(key); if(bx>=OCEAN_START) oceanBlocks.add(key); continue;
+    }
     if(riverBlocks.has(key)){ waterBlocks.add(key); continue; }
     if(bx===9 && R()<0.5){ dockBlocks.add(key); }
     // open farmland/scrub/woods: no buildings, just field decoration (rural, wasteland, forest)
     if(OPEN_DISTRICTS.has(d) && R()<0.45){ ruralFieldBlocks.add(key); continue; }
     // parks
-    if(d!=='harbor' && !OPEN_DISTRICTS.has(d) && R()<0.10){
+    if(d!=='harbor' && d!=='island' && !OPEN_DISTRICTS.has(d) && R()<0.10){
       parkBlocks.add(key);
       for(let i=0;i<7;i++) trees.push({x:x0+40+R()*(BLOCK-80), y:y0+40+R()*(BLOCK-80), r:16+R()*12});
       continue;
     }
-    // subdivide block into buildings — denser/tighter lots in suburb & old town, sprawling single lots in hills & open districts
-    const cols = (d==='suburb'||d==='oldtown')?3 : (OPEN_DISTRICTS.has(d)||d==='hills')?1 : (d==='downtown'? (R()<.5?2:1) : 2);
-    const rows = (d==='suburb'||d==='oldtown')?3 : (OPEN_DISTRICTS.has(d)||d==='hills')?1 : 2;
+    // subdivide block into buildings — denser/tighter lots in suburb & old town, sprawling single lots in hills, open districts & islands
+    const cols = (d==='suburb'||d==='oldtown')?3 : (OPEN_DISTRICTS.has(d)||d==='hills'||d==='island')?1 : (d==='downtown'? (R()<.5?2:1) : 2);
+    const rows = (d==='suburb'||d==='oldtown')?3 : (OPEN_DISTRICTS.has(d)||d==='hills'||d==='island')?1 : 2;
     const gw=BLOCK/cols, gh=BLOCK/rows;
     for(let i=0;i<cols;i++)for(let j=0;j<rows;j++){
-      if(R()<0.14) continue;                       // gap = alley / yard
-      const m = d==='suburb'?34 : d==='oldtown'?26 : d==='hills'?70 : OPEN_DISTRICTS.has(d)?60 : 22;   // margin (sidewalk/yard/field)
+      if(d!=='island' && R()<0.14) continue;        // gap = alley / yard (every island keeps its one hut)
+      const m = d==='suburb'?34 : d==='oldtown'?26 : d==='hills'?70 : d==='island'?90 : OPEN_DISTRICTS.has(d)?60 : 22;   // margin (sidewalk/yard/field/beach)
       const w=gw-m*2-R()*20, h=gh-m*2-R()*20;
       const b={
         x:x0+i*gw+m+R()*8, y:y0+j*gh+m+R()*8, w, h,
         c:pick.call? DIST_PAL[d][Math.floor(R()*DIST_PAL[d].length)] : '#555',
-        tall: d==='downtown'? 2+R()*3 : d==='hills'? 1.1+R()*0.4 : (d==='industrial'?1.2:(OPEN_DISTRICTS.has(d)?(R()<0.15?1.9:0.85):1)),
+        tall: d==='downtown'? 2+R()*3 : d==='hills'? 1.1+R()*0.4 : (d==='industrial'?1.2:(OPEN_DISTRICTS.has(d)?(R()<0.15?1.9:0.85):(d==='island'?0.7:1))),
         win: R(), d
       };
       b.c = DIST_PAL[d][Math.floor(R()*DIST_PAL[d].length)];
@@ -304,7 +338,7 @@ function genCity(){
       b.door = R()<0.9;
       b.awning = (d==='suburb'||d==='oldtown') && R()<0.55;
       b.chimney = (d==='suburb'||d==='oldtown') && R()<0.4;
-      b.pitchedRoof = (d==='suburb'||d==='oldtown') && !b.awning && R()<0.5;
+      b.pitchedRoof = ((d==='suburb'||d==='oldtown') && !b.awning && R()<0.5) || d==='island';
       b.rollDoor = d==='industrial' && R()<0.55;
       b.corrugated = d==='industrial' && !b.rollDoor && R()<0.4;
       b.rust = d==='industrial' && R()<0.35;
@@ -321,6 +355,7 @@ function genCity(){
       blockMap.get(key).push(buildings.length-1);
       if((d==='suburb'||d==='oldtown'||d==='hills') && R()<.7) trees.push({x:x0+i*gw+gw/2+(R()-.5)*60, y:y0+j*gh+gh-14, r:12+R()*8});
       if(OPEN_DISTRICTS.has(d) && R()<(d==='forest'?.85:.5)) trees.push({x:x0+i*gw+gw*.15+(R()-.5)*40, y:y0+j*gh+gh*.85+(R()-.5)*40, r:14+R()*10});
+      if(d==='island' && R()<.8) trees.push({x:x0+i*gw+gw*.75+(R()-.5)*60, y:y0+j*gh+gh*.3+(R()-.5)*60, r:10+R()*8});
     }
   }
   // streetlights at intersections (skip deep water and the unlit rural band)
@@ -677,6 +712,29 @@ function populate(){
   if(civ<civTarget) spawnPed(false,false);
   if(inGang&&gng<8) spawnPed(true,false);
   if(traffic<trafficTarget) spawnTraffic();
+  // ocean life: pirates patrol near their home island (ambient danger, no wanted level needed),
+  // and civilian boats putter between the islands purely for ambiance
+  if(player.x>(OCEAN_START-2)*C0||inWater(player.x,player.y)||(player.inCar&&player.inCar.cls==='water')){
+    let pirates=0,civBoats=0;
+    for(const c of cars){ if(c.driver==='pirate')pirates++; else if(c.driver==='boatnpc')civBoats++; }
+    const nearIslands=islands.filter(isl=>dist(isl.x,isl.y,player.x,player.y)<1400); // must survive the despawn-far check below
+    if(pirates<3&&nearIslands.length&&Math.random()<0.01){
+      const home=pick(nearIslands), a=rnd(TAU), d=rnd(150,400);
+      const x=clamp(home.x+Math.cos(a)*d,10*C0+ROAD,CITY-ROAD), y=clamp(home.y+Math.sin(a)*d,ROAD,CITY-ROAD);
+      if(inWater(x,y)&&dist(x,y,player.x,player.y)>500){
+        const pr=spawnCar('boat',x,y,rnd(TAU),'pirate');
+        pr.c1='#3a1414'; pr.c2='#1a0808'; pr.homeX=home.x; pr.homeY=home.y;
+      }
+    }
+    if(civBoats<3&&Math.random()<0.012){
+      const a=rnd(TAU), d=rnd(400,900);
+      const x=clamp(player.x+Math.cos(a)*d,10*C0+ROAD,CITY-ROAD), y=clamp(player.y+Math.sin(a)*d,ROAD,CITY-ROAD);
+      if(inWater(x,y)){
+        const cb=spawnCar('boat',x,y,rnd(TAU),'boatnpc');
+        cb.c1=pick(['#888','#2a6fb0','#7a5','#ddd']); cb.wanderX=x; cb.wanderY=y;
+      }
+    }
+  }
   // despawn far
   for(let i=peds.length-1;i>=0;i--){
     const p=peds[i];
@@ -685,8 +743,8 @@ function populate(){
   }
   for(let i=cars.length-1;i>=0;i--){
     const c=cars[i];
-    if(c.driver==='npc'&&dist(c.x,c.y,player.x,player.y)>1900) cars.splice(i,1);
-    else if((c.driver==='cop'||c.driver==='military'||c.driver==='coastguard'||c.driver==='hunter'||c.driver==='alien')&&wanted===0&&dist(c.x,c.y,player.x,player.y)>1400) cars.splice(i,1);
+    if((c.driver==='npc'||c.driver==='pirate'||c.driver==='boatnpc')&&dist(c.x,c.y,player.x,player.y)>1900) cars.splice(i,1);
+    else if((c.driver==='cop'||c.driver==='military'||c.driver==='coastguard'||c.driver==='hunter'||c.driver==='alien'||c.driver==='airpursuit'||c.driver==='copboat')&&wanted===0&&dist(c.x,c.y,player.x,player.y)>1400) cars.splice(i,1);
   }
 }
 
@@ -966,7 +1024,8 @@ const HOUSES=[
   {name:'MARINA HOUSE',    x:roadCenter(9)-140,y:roadCenter(8)+140, price:900000,  owned:false, water:'harborS'},
   {name:'LAKE HOUSE',      x:roadCenter(6)+140,y:roadCenter(13)+140,price:600000,  owned:false, water:'river'},
   {name:'RIVERSIDE CABIN', x:roadCenter(4)+140,y:roadCenter(15)+140,price:450000,  owned:false, water:'river'},
-  {name:'RURAL ESTATE',    x:roadCenter(9)+140,y:roadCenter(13)+140,price:2500000, owned:false}
+  {name:'RURAL ESTATE',    x:roadCenter(9)+140,y:roadCenter(13)+140,price:2500000, owned:false},
+  {name:'ISLAND HIDEAWAY', x:islands[0]?islands[0].x:roadCenter(15)+250,y:islands[0]?islands[0].y:roadCenter(9)+250,price:3200000,owned:false}
 ];
 // nudge every water-tagged house onto an actual shoreline tile — "lakeside" should mean lakeside
 {
@@ -1941,6 +2000,19 @@ function driveHunter(c,dt){
     if(rel>5){damageCar(player.inCar,rel*3,'hunter');damageCar(c,rel*2,'crash');}
   }
 }
+// air pursuit — hostile helicopters scrambled specifically because the player is flying (see updateWanted)
+function driveAirPursuit(c,dt){
+  const dx=player.x-c.x, dy=player.y-c.y, d=Math.hypot(dx,dy);
+  const want=Math.atan2(dy,dx);
+  const steer=clamp(angDiff(c.a,want)*1.3,-1,1);
+  const throttle=d<220?.35:.9;
+  stepCar(c,dt,throttle,steer,false);
+  c.shootCd=(c.shootCd===undefined?rnd(.5,1):c.shootCd)-dt;
+  if(c.shootCd<=0&&d<650&&losClear(c.x,c.y,player.x,player.y)){
+    c.shootCd=rnd(.7,1.1);
+    enemyShoot(c,player.x,player.y,.13,11);
+  }
+}
 // aliens (tier 4) — a UFO that hovers/orbits rather than driving, firing a distinct green beam
 function driveUfo(c,dt){
   const t=performance.now()/1000;
@@ -1952,6 +2024,34 @@ function driveUfo(c,dt){
     c.shootCd=rnd(.8,1.3);
     enemyShoot(c,player.x,player.y,.1,14,'#5cff8a');
   }
+}
+// pirates — ambient ocean danger, independent of wanted level. patrol near their home island,
+// chase and gun you down (from the boat itself — no peds to drop out here) if you stray close
+function drivePirate(c,dt){
+  const d=dist(c.x,c.y,player.x,player.y);
+  const chasing=d<520;
+  // homeX/Y should always be set at spawn (see populate()) — fall back to holding position if that's ever not true,
+  // since an undefined-driven NaN heading here would otherwise wedge this car's angle permanently
+  const tx=chasing?player.x:(c.homeX??c.x), ty=chasing?player.y:(c.homeY??c.y);
+  const want=Math.atan2(ty-c.y,tx-c.x);
+  const steer=clamp(angDiff(c.a,want)*1.2,-1,1);
+  const closeEnough=dist(c.x,c.y,tx,ty)<80;
+  stepCar(c,dt,closeEnough&&!chasing?0:.7,steer,false);
+  c.shootCd=(c.shootCd===undefined?rnd(.5,1.5):c.shootCd)-dt;
+  if(chasing&&c.shootCd<=0&&losClear(c.x,c.y,player.x,player.y)){
+    c.shootCd=rnd(.9,1.5);
+    enemyShoot(c,player.x,player.y,.16,10);
+  }
+}
+// harmless civilian boats puttering between the islands — pure ambiance, never hostile
+function driveBoatNPC(c,dt){
+  if(c.wanderX===undefined||dist(c.x,c.y,c.wanderX,c.wanderY)<60||Math.random()<0.003){
+    const a=rnd(TAU), d=rnd(300,700);
+    c.wanderX=clamp(c.x+Math.cos(a)*d,(OCEAN_START-1)*C0,CITY-ROAD);
+    c.wanderY=clamp(c.y+Math.sin(a)*d,ROAD,CITY-ROAD);
+  }
+  const want=Math.atan2(c.wanderY-c.y,c.wanderX-c.x);
+  stepCar(c,dt,.4,clamp(angDiff(c.a,want)*1.1,-1,1),false);
 }
 // ---------------------- bomber planes + nukes (max military escalation) ----------------------
 function spawnBomber(){
@@ -2111,6 +2211,16 @@ function updateWanted(dt){
       enemyShoot(heli,player.x,player.y,.12,10);
     }
   }
+  // ---- air pursuit: take to the sky yourself and the response gets a lot more aerial ----
+  if(player.inCar&&player.inCar.cls==='air'&&wanted>=2){
+    const need=Math.min(3,Math.floor(wanted/2)+(wanted>=5?1:0));
+    let airCars=0; for(const c of cars) if(c.driver==='airpursuit')airCars++;
+    if(airCars<need&&Math.random()<0.03){
+      const ang=rnd(TAU), d=1000;
+      const ac=spawnCar('heli',player.x+Math.cos(ang)*d,player.y+Math.sin(ang)*d,ang+Math.PI,'airpursuit');
+      ac.siren=true; ac.c1='#2a2a30'; ac.c2='#141416';
+    }
+  }
   // ---- military heat: staying maxed-out draws the Army in; a Federal Reserve alarm calls them instantly ----
   if(wanted>=5) militaryHeat=clamp(militaryHeat+dt*2.2,0,100);
   else militaryHeat=Math.max(0,militaryHeat-dt*6);
@@ -2158,6 +2268,18 @@ function updateWanted(dt){
       say('','UFO SIGHTED',3);
     }
   }
+  // cop boats — the low-tier water chase, so a boat isn't a free pass from the police at 1-2 stars
+  if(wanted>=1&&wanted<3&&(inWater(player.x,player.y)||(player.inCar&&player.inCar.cls==='water'))){
+    let cbBoats=0; for(const c of cars) if(c.driver==='copboat')cbBoats++;
+    if(cbBoats<2 && Math.random()<0.012){
+      const ang=rnd(TAU);
+      const x=clamp(player.x+Math.cos(ang)*900,10*C0+ROAD+40,CITY-40), y=clamp(player.y+Math.sin(ang)*900,40,CITY-40);
+      if(inWater(x,y)){
+        const pb=spawnCar('boat',x,y,Math.atan2(player.y-y,player.x-x),'copboat');
+        pb.siren=true;
+      }
+    }
+  }
   // coast guard — sustained heat or a coastal-bank heist, while near/on the water
   const coastalHeist=!!(activeHeist&&activeHeist.bank.coastal);
   if((wanted>=3||coastalHeist)&&(inWater(player.x,player.y)||(player.inCar&&player.inCar.cls==='water'))){
@@ -2173,7 +2295,7 @@ function updateWanted(dt){
   }
   // line of sight / evasion
   let seen=false;
-  for(const c of cars){ if((c.driver==='cop'||c.driver==='military'||c.driver==='coastguard'||c.driver==='hunter'||c.driver==='alien')&&dist(c.x,c.y,player.x,player.y)<520&&losClear(c.x,c.y,player.x,player.y)){seen=true;break;} }
+  for(const c of cars){ if((c.driver==='cop'||c.driver==='military'||c.driver==='coastguard'||c.driver==='hunter'||c.driver==='alien'||c.driver==='airpursuit'||c.driver==='copboat')&&dist(c.x,c.y,player.x,player.y)<520&&losClear(c.x,c.y,player.x,player.y)){seen=true;break;} }
   for(const p of peds){ if((p.cop||p.military||p.guard||p.hunter)&&p.state!=='dead'&&dist(p.x,p.y,player.x,player.y)<420&&losClear(p.x,p.y,player.x,player.y)){seen=true;break;} }
   if(heli&&dist(heli.x,heli.y,player.x,player.y)<500)seen=true;
   if(copsIgnorePlayer())seen=false; // riding around in a cruiser, nobody's looking twice
@@ -2213,17 +2335,19 @@ function updatePeds(dt){
       // soldiers dropped by an APC — harder-hitting, longer-ranged than a beat cop
       if(wanted>0&&dToP<560){
         p.a=Math.atan2(player.y-p.y,player.x-p.x);
-        if(dToP>150){ p.x+=Math.cos(p.a)*1.5*dt*60; p.y+=Math.sin(p.a)*1.5*dt*60; p.phase+=dt*10; }
+        const flying=player.inCar&&player.inCar.cls==='air';
+        if(dToP>150&&!flying){ p.x+=Math.cos(p.a)*1.5*dt*60; p.y+=Math.sin(p.a)*1.5*dt*60; p.phase+=dt*10; }
         p.shootCd-=dt;
-        if(p.shootCd<=0&&losClear(p.x,p.y,player.x,player.y)){ p.shootCd=rnd(.6,1); enemyShoot(p,player.x,player.y,.08,14); }
+        if(p.shootCd<=0&&losClear(p.x,p.y,player.x,player.y)){ p.shootCd=flying?rnd(.35,.6):rnd(.6,1); enemyShoot(p,player.x,player.y,.08,14); } // flak fire: faster when you're airborne
       } else wander(p,dt,.5);
     } else if(p.hunter){
       // bounty hunters — elite, faster, tighter aim than a soldier
       if(wanted>0&&dToP<620){
         p.a=Math.atan2(player.y-p.y,player.x-p.x);
-        if(dToP>140){ p.x+=Math.cos(p.a)*1.8*dt*60; p.y+=Math.sin(p.a)*1.8*dt*60; p.phase+=dt*12; }
+        const flying=player.inCar&&player.inCar.cls==='air';
+        if(dToP>140&&!flying){ p.x+=Math.cos(p.a)*1.8*dt*60; p.y+=Math.sin(p.a)*1.8*dt*60; p.phase+=dt*12; }
         p.shootCd-=dt;
-        if(p.shootCd<=0&&losClear(p.x,p.y,player.x,player.y)){ p.shootCd=rnd(.45,.8); enemyShoot(p,player.x,player.y,.05,16); }
+        if(p.shootCd<=0&&losClear(p.x,p.y,player.x,player.y)){ p.shootCd=flying?rnd(.3,.5):rnd(.45,.8); enemyShoot(p,player.x,player.y,.05,16); } // flak fire
       } else wander(p,dt,.6);
     } else if(p.guard){
       // bank heist security — always hostile while the alarm's tripped, regardless of wanted math
@@ -2435,6 +2559,11 @@ function drawWorld(){
         g.fillStyle=(k%2===0)?rowCol1:rowCol2;
         g.fillRect(sx,sy+k*40,BLOCK,40);
       }
+    }
+    if(islandBlocks.has(i+','+j)){
+      // sandy beach ring around the hut's little plot — a visible island, not just a block that happens to have a building
+      g.fillStyle=`rgb(${196-dk*70},${172-dk*62},${118-dk*44})`;
+      g.beginPath();g.ellipse(sx+BLOCK/2,sy+BLOCK/2,BLOCK*.62,BLOCK*.6,0,0,TAU);g.fill();
     }
   }
   // decals (under everything moving)
@@ -2806,7 +2935,7 @@ function drawCar(c){
       rr(g,-c.l*.48,-c.w*.06,c.l*.16,c.w*.5,3);g.fill();
     }
   }
-  if(c.driver==='cop'||c.type==='cop'){
+  if(c.driver==='cop'||c.type==='cop'||c.driver==='copboat'){
     g.fillStyle='#1a1a2e';rr(g,-c.l*.1,-c.w/2,c.l*.2,c.w,3);g.fill();
     // lightbar flashing red/blue — police only
     const ph=Math.floor(performance.now()/140)%2;
@@ -2823,6 +2952,12 @@ function drawCar(c){
     // single pulsing blue beacon, no lightbar housing — the orange hull stripe is the real tell
     g.fillStyle=Math.sin(performance.now()/160)>0?'#3aa0ff':'rgba(58,160,255,.3)';
     g.beginPath();g.arc(0,-c.w*.1,c.w*.1,0,TAU);g.fill();
+  } else if(c.driver==='pirate'){
+    // a small dark pennant on a mast — no lawful beacon, just a flag flying off a boat that shouldn't be this close
+    g.strokeStyle='#1a1a1a';g.lineWidth=1.5;
+    g.beginPath();g.moveTo(0,0);g.lineTo(0,-c.w*.6);g.stroke();
+    g.fillStyle='#7a1010';
+    g.beginPath();g.moveTo(0,-c.w*.6);g.lineTo(c.l*.16,-c.w*.5);g.lineTo(0,-c.w*.4);g.closePath();g.fill();
   }
   // brake / head lights (drawn additively later as cones; small lamps here)
   g.fillStyle=dk>.35?'#fff7cf':'rgba(255,255,255,.6)';
@@ -3382,6 +3517,12 @@ function drawMinimap(){
     if(wbx>=10)continue;
     g.fillRect(mx+wbx*C0*mmScale,my+wby*C0*mmScale,C0*mmScale,C0*mmScale);
   }
+  // islands — punch back through the ocean fill so they actually show up as land
+  g.fillStyle=MM_DIST_COLOR.island;
+  for(const key of islandBlocks){
+    const[ibx,iby]=key.split(',').map(Number);
+    g.fillRect(mx+ibx*C0*mmScale-1,my+iby*C0*mmScale-1,C0*mmScale+2,C0*mmScale+2);
+  }
   // rural band tint
   g.fillStyle='rgba(140,110,60,.16)';
   g.fillRect(mx,my+RURAL_START*C0*mmScale,MM,MM-RURAL_START*C0*mmScale);
@@ -3427,14 +3568,21 @@ function drawMinimap(){
   for(const cu of CULTS) mmLandmark(mx,my,cu.x,cu.y,cu.color,player.cultId===cu.id?'★':'C');
   for(const bank of BANKS) mmLandmark(mx,my,bank.x,bank.y,'#ff3060','$');
   for(const h of HOUSES) if(!h.owned) mmLandmark(mx,my,h.x,h.y,'#ffcf70','H');
+  for(const isl of islands) mmLandmark(mx,my,isl.x,isl.y,'#e0c080','I');
   g.fillStyle='#4fa3e0';
   for(const ev of cityEvents){g.beginPath();g.arc(mx+ev.x*mmScale,my+ev.y*mmScale,3.6,0,TAU);g.fill();}
-  // cops — flash blue/red while wanted, dim red otherwise
-  for(const c of cars)if(c.driver==='cop'){
+  // cops (incl. cop boats) — flash blue/red while wanted, dim red otherwise
+  for(const c of cars)if(c.driver==='cop'||c.driver==='copboat'){
     const flash=wanted>0 && Math.floor(performance.now()/180)%2;
     g.fillStyle=wanted>0? (flash?'#3060ff':'#ff3040') : 'rgba(255,48,64,.55)';
     g.beginPath();g.arc(mx+c.x*mmScale,my+c.y*mmScale,3.4,0,TAU);g.fill();
   }
+  // pirates — dull red, always visible (ambient danger, not tied to wanted)
+  g.fillStyle='rgba(160,30,30,.8)';
+  for(const c of cars)if(c.driver==='pirate'){ g.beginPath();g.arc(mx+c.x*mmScale,my+c.y*mmScale,3,0,TAU);g.fill(); }
+  // civilian boats — faint, just ambiance
+  g.fillStyle='rgba(200,210,230,.45)';
+  for(const c of cars)if(c.driver==='boatnpc'){ g.beginPath();g.arc(mx+c.x*mmScale,my+c.y*mmScale,2.2,0,TAU);g.fill(); }
   // player — rotated triangle showing facing direction
   const faceA=player.inCar?player.inCar.a:Math.atan2(mouse.y-cv.height/2,mouse.x-cv.width/2);
   const px=mx+player.x*mmScale, py=my+player.y*mmScale;
@@ -3601,10 +3749,13 @@ function frame(now){
     for(const c of cars){
       if(c.driver==='npc')driveNPC(c,dt);
       else if(c.driver==='cop'&&!c.parked)driveCop(c,dt);
-      else if(c.driver==='military'||c.driver==='coastguard')driveArmed(c,dt);
+      else if(c.driver==='military'||c.driver==='coastguard'||c.driver==='copboat')driveArmed(c,dt);
       else if(c.driver==='hunter')driveHunter(c,dt);
       else if(c.driver==='alien')driveUfo(c,dt);
+      else if(c.driver==='airpursuit')driveAirPursuit(c,dt);
+      else if(c.driver==='pirate')drivePirate(c,dt);
       else if(c.driver==='bomber')driveBomber(c,dt);
+      else if(c.driver==='boatnpc')driveBoatNPC(c,dt);
       else if(c.driver===null){ stepCar(c,dt,0,0,false); } // coast to stop
     }
     carVsCar();
