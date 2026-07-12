@@ -1368,7 +1368,11 @@ addEventListener('keydown',e=>{ if(e.code==='KeyC') tryCult(); });
 
 // ---------------------- car dealership (press V or ` near DEALERSHIP; TAB cycles category) ----------------------
 const DEALERSHIP={x:roadCenter(4)-140,y:roadCenter(3)+140};
-const BOAT_SPAWN={x:10*C0+ROAD+150,y:roadCenter(5)}; // bx>=10 is unconditionally water in genCity — a guaranteed launch spot
+// y must land inside a block's interior, not on a roadCenter() bridge strip — inWater() treats
+// every block's local ROAD-strip band as a walkable bridge (bx>=OCEAN_START deep-sea blocks are the
+// only exception), so a bridge-strip y here would silently NOT count as water and any boat parked
+// on it takes continuous "beached" damage until it explodes.
+const BOAT_SPAWN={x:10*C0+ROAD+150,y:5*C0+ROAD+BLOCK/2};
 const DEALER_GROUND=[
   {type:'beater', price:350},
   {type:'sedan',  price:1200},
@@ -1622,7 +1626,7 @@ function garageBuy(n){
 
 // ---------------------- THE VAULT — high-end black market (press L) ----------------------
 const VAULT={x:roadCenter(7)-150,y:roadCenter(7)+150};
-const MARINA={x:10*C0+ROAD+150,y:roadCenter(7)}; // bx>=10 is unconditionally water — a guaranteed dock spot, mirrors BOAT_SPAWN
+const MARINA={x:10*C0+ROAD+150,y:7*C0+ROAD+BLOCK/2}; // interior of the block, not a roadCenter() bridge strip — see BOAT_SPAWN's comment
 let vaultOpen=false;
 const VAULT_ITEMS=[
   {n:1,label:'EXPLOSIVE BULLETS',price:2000000,flag:'explosiveAmmo'},
@@ -1983,6 +1987,11 @@ function updateCityEvents(dt){
     if(ev.type==='ambush'&&ev.active&&ev.kills>=3){
       player.cash+=420; stats.cashEarned+=420; cityEvents.splice(i,1); say('UNKNOWN','block got quiet. +$420',3);
     }
+    // tow: the first visit without a car only warns you — re-check every later visit (now
+    // possibly in a car) instead of staying silently stuck once ev.active is set
+    if(ev.type==='tow'&&ev.active&&player.inCar&&dist(player.x,player.y,ev.x,ev.y)<58){
+      player.cash+=260; stats.cashEarned+=260; cityEvents.splice(i,1); say('STRANDED DRIVER','you actually stopped. +$260. weird city',3); continue;
+    }
     if(ev.type==='stocktip'&&ev.active){
       ev.tipDelay-=dt;
       if(ev.tipDelay<=0){
@@ -2171,17 +2180,22 @@ function stepCar(c,dt,throttle,steerIn,handbrake){
   if(Math.abs(ls)>1.4&&Math.abs(fs)>2) decals.push({x:c.x,y:c.y,a:c.a,life:5,type:'tire'});
   c.x+=c.vx*dt*60; c.y+=c.vy*dt*60;
   if(c.cls!=='air'){
+    // hazard damage/shake (wall rams, beaching, wrong-terrain) is rate-limited per car — otherwise
+    // sustained contact re-fires every single frame (up to 60x/sec), which shreds hp almost
+    // instantly and spams camera shake into a constant "rattle". Velocity damping still applies
+    // every frame so the car/boat still feels stuck; only the punishing part is throttled.
+    c.hazardCd=(c.hazardCd||0)-dt;
     // building collision (treat as circle) — air vehicles fly over everything
     const r=Math.max(c.w,c.l)/2*.7;
     const res=collideCircle(c.x,c.y,r);
     if(res.hit){
       const impact=Math.hypot(c.vx,c.vy);
-      if(impact>3){ damageCar(c,impact*6,'wall'); shakeIfPlayer(c,impact); }
+      if(impact>3&&c.hazardCd<=0){ damageCar(c,impact*6,'wall'); shakeIfPlayer(c,impact); c.hazardCd=0.25; }
       c.x=res.x; c.y=res.y; c.vx*=.3; c.vy*=.3;
     }
     if(c.cls==='water'){
-      if(!inWater(c.x,c.y)){ damageCar(c,4,'beached'); c.vx*=.85; c.vy*=.85; } // boats hate dry land
-    } else if(inWater(c.x,c.y)){ damageCar(c,3,'water'); c.vx*=.9; c.vy*=.9; } // ground vehicles hate water
+      if(!inWater(c.x,c.y)){ if(c.hazardCd<=0){ damageCar(c,4,'beached'); c.hazardCd=0.25; } c.vx*=.85; c.vy*=.85; } // boats hate dry land
+    } else if(inWater(c.x,c.y)){ if(c.hazardCd<=0){ damageCar(c,3,'water'); c.hazardCd=0.25; } c.vx*=.9; c.vy*=.9; } // ground vehicles hate water
   }
 }
 function shakeIfPlayer(c,amt){ if(c===player.inCar){shakeT=.2;shakeA=Math.min(amt,10);} }
