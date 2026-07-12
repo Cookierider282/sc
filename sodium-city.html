@@ -215,6 +215,7 @@ const OCEAN_START=13;                                 // bx>=13 (3+ columns off 
 // world data (islandBlocks populated below, before district() is ever called — see genCity())
 const islandBlocks=new Set();       // "bx,by" — tiny landmasses punched into the open ocean
 const islands=[];                   // {x,y} world-space center of each island, filled in genCity()
+let privateIsland=null;             // {x,y} the one extra island reserved for the VAULT's Private Island purchase
 
 // district lookup by block coords — checked highest by-band first since they're later additions
 function district(bx,by){
@@ -291,6 +292,18 @@ function genCity(){
       if(tooClose)continue;
       islandBlocks.add(key);
       islands.push({x:bx*C0+ROAD+BLOCK/2, y:by*C0+ROAD+BLOCK/2});
+    }
+    // one more reserved island, generated the same way but kept out of islands[] — invisible to
+    // pirates/civilian boats/the minimap 'I' glyph until the VAULT's Private Island is purchased
+    for(let tries2=0;tries2<400&&!privateIsland;tries2++){
+      const bx=OCEAN_START+1+Math.floor(Ri()*(N-OCEAN_START-3));
+      const by=1+Math.floor(Ri()*(N-2));
+      const key=bx+','+by;
+      let tooClose=false;
+      for(let dx=-1;dx<=1;dx++)for(let dy=-1;dy<=1;dy++) if(islandBlocks.has((bx+dx)+','+(by+dy))) tooClose=true;
+      if(tooClose)continue;
+      islandBlocks.add(key);
+      privateIsland={x:bx*C0+ROAD+BLOCK/2, y:by*C0+ROAD+BLOCK/2};
     }
     for(const key of islandBlocks){
       const[ibx,iby]=key.split(',').map(Number);
@@ -426,6 +439,7 @@ function isWaterfront(x,y){
 }
 
 // ---------------------- game state ----------------------
+const DEATH_MESSAGES=['COOKED','YOU GOT SMOKED',"RATIO'D BY THE COPS",'SKILL ISSUE','NAHH BRO \u{1F480}','THEY ATE','GNG…','PULLED AN L'];
 const PLAYER_DMG_MULT=0.6;      // player takes 60% of nominal incoming damage
 const ARMOR_ABSORB=0.85;        // armor eats 85% of a hit while it lasts
 const IFRAME_T=0.4;             // brief invulnerability after being hit
@@ -476,7 +490,9 @@ const CARTYPES={
   // water & air — cls tags special-cased in stepCar/drawCar/carVsCar; ground vehicles have no cls
   boat:{acc:.22,vmax:8.0, turn:.05,grip:.5,w:22,l:48,hp:110,c1:'#2a6fb0',c2:'#123a5c',cls:'water'},
   heli:{acc:.5, vmax:13.0,turn:.09,grip:.9,w:22,l:24,hp:90, c1:'#3a3a3a',c2:'#1a1a1a',cls:'air'},
-  plane:{acc:.3,vmax:16.0,turn:.03,grip:.7,w:26,l:44,hp:100,c1:'#e8e8e8',c2:'#888',cls:'air'}
+  plane:{acc:.3,vmax:16.0,turn:.03,grip:.7,w:26,l:44,hp:100,c1:'#e8e8e8',c2:'#888',cls:'air'},
+  // endgame flex — VAULT purchase only, bigger/tankier than the regular boat
+  yacht:{acc:.16,vmax:6.5, turn:.03,grip:.55,w:36,l:88,hp:260,c1:'#f4f0e0',c2:'#c8a850',cls:'water'}
 };
 const cars=[];   // {x,y,a,vx,vy,type,driver,hp,steer,burn,tirePop,siren,axis,dir,laneSign,stopT}
 const peds=[];   // {x,y,a,state,color,size,phase,hp,gang,cop,shootCd,deadT}
@@ -738,7 +754,7 @@ function populate(){
   // despawn far
   for(let i=peds.length-1;i>=0;i--){
     const p=peds[i];
-    const keep=((p.cop||p.military||p.hunter)&&wanted>0)||(p.guard&&activeHeist)||(p.ally&&player.cultId);
+    const keep=((p.cop||p.military||p.hunter)&&wanted>0)||(p.guard&&activeHeist)||(p.ally&&player.cultId)||(p.ally&&p.bodyguard);
     if(dist(p.x,p.y,player.x,player.y)>1600 && !keep) peds.splice(i,1);
   }
   for(let i=cars.length-1;i>=0;i--){
@@ -769,8 +785,8 @@ function fireWeapon(){
     return;
   }
   if(w.arc){
-    if(w.ammo<=0){ say('','*click* out of rockets — find another RPG drop',2.5); fireCd=.4; return; }
-    fireCd=w.rate; w.ammo--;
+    if(w.ammo<=0&&!player.infiniteAmmo){ say('','*click* out of rockets — find another RPG drop',2.5); fireCd=.4; return; }
+    fireCd=w.rate; if(!player.infiniteAmmo) w.ammo--;
     // mouse.x/y is a screen offset from the (camera-centered) player, so this recovers
     // an actual world-space aim point instead of just a direction, letting the rocket
     // target a specific spot — or lock onto the heli if you aim near it.
@@ -788,8 +804,8 @@ function fireWeapon(){
     lastSeen=0;
     return;
   }
-  if(w.ammo<=0){ say('','*click* out of ammo — grab pickups or hit the shop (B)',2.5); fireCd=.4; return; }
-  fireCd=w.rate; w.ammo--;
+  if(w.ammo<=0&&!player.infiniteAmmo){ say('','*click* out of ammo — grab pickups or hit the shop (B)',2.5); fireCd=.4; return; }
+  fireCd=w.rate; if(!player.infiniteAmmo) w.ammo--;
   const shots=w.pellets||1;
   for(let i=0;i<shots;i++){
     const a2=ang+(Math.random()-.5)*2*w.spread;
@@ -846,7 +862,7 @@ function hurtPed(p,dmg,src){
         const t=territoryAt(p.x,p.y);
         if(t&&t.owner==='gang'){
           t.control=Math.max(0,t.control-14);
-          if(t.control<=0){ t.owner='player'; t.control=100; say('',t.name+' is yours now — passive income unlocked',4); }
+          if(t.control<=0){ t.owner='player'; t.control=100; say('',t.name+' is yours now — passive income unlocked',4); stockShock('realestate',rnd(.02,.05)); }
         }
       }
       // armed enemies occasionally drop their launcher — the "found on the ground" RPG
@@ -952,7 +968,7 @@ function hitPlayer(dmg){
   if(player.armor>0){ const ab=Math.min(player.armor,dmg*ARMOR_ABSORB); player.armor-=ab; dmg-=ab; }
   player.hp-=dmg; player.lastHitT=0; player.iframeT=IFRAME_T;
   shakeT=Math.max(shakeT,.15); shakeA=Math.max(shakeA,5);
-  if(player.hp<=0){ player.dead=true; player.respawnT=3; say('','WASTED',3); }
+  if(player.hp<=0){ player.dead=true; player.respawnT=3; player.deathMsg=pick(DEATH_MESSAGES); say('','WASTED',3); }
 }
 
 // ---------------------- enter / exit / shop ----------------------
@@ -1044,13 +1060,140 @@ const HOUSES=[
     }
   }
 }
+// ---------------------- Business Empire — bought/managed from the pause-screen menu (press I while paused) ----------------------
+const BUSINESSES=[
+  {id:'laundromat', name:'SUDS & SONS LAUNDROMAT', tier:'easy', price:500000,   baseIncome:2.2, front:true,  x:roadCenter(1)-160,y:roadCenter(6)+160},
+  {id:'pizza',      name:'ATOMIC SLICE PIZZA',      tier:'easy', price:1200000, baseIncome:3.5, front:true,  x:roadCenter(3)+160,y:roadCenter(1)+160},
+  {id:'nightclub',  name:'NEON VOID NIGHTCLUB',     tier:'mid',  price:5500000, baseIncome:14,               x:roadCenter(5)-160,y:roadCenter(1)-160},
+  {id:'carlot',     name:'SODIUM AUTO LOT',         tier:'mid',  price:8000000, baseIncome:18,               x:roadCenter(3)-160,y:roadCenter(6)-160},
+  {id:'gunshop',    name:'IRONSIGHT GUN SHOP',      tier:'mid',  price:11000000,baseIncome:22,               x:roadCenter(8)+160,y:roadCenter(1)+160},
+  {id:'warehouse',  name:'DOCKSIDE WAREHOUSE',      tier:'mid',  price:6000000, baseIncome:9,  supply:true,  x:roadCenter(7)+160,y:roadCenter(8)+160},
+  {id:'casino',     name:'GILT COAST CASINO',       tier:'high', price:22000000,baseIncome:55,               x:roadCenter(9)-160,y:roadCenter(2)-160},
+  {id:'druglab',    name:'BACKLOT LAB',             tier:'high', price:32000000,baseIncome:70, needsSupply:'warehouse', x:roadCenter(8)-160,y:roadCenter(7)-160},
+  {id:'realestate', name:'SUMMIT REALTY EMPIRE',    tier:'high', price:38000000,baseIncome:40, scalesWithHouses:true,   x:roadCenter(2)+160,y:roadCenter(9)+160}
+];
+const TIER_COLOR={easy:'#9be09b',mid:'#ffd23f',high:'#ff6a3f'};
+function makeBizState(){
+  return {owned:false, level:0, till:0, rep:0, staff:{manager:false,security:false,accountant:false},
+          launder:0, uncollectedT:0, underAttack:false, attackT:0, bankrupt:false};
+}
+const bizState=BUSINESSES.map(makeBizState);
+const UPGRADE_COST_MULT=[.15,.30,.50]; // cost = price * mult[level] to advance from level to level+1 (max level 3)
+const STAFF_COST={manager:1000000,security:500000,accountant:750000};
+function bizIndex(id){ return BUSINESSES.findIndex(b=>b.id===id); }
+function bizIncome(i){
+  const b=BUSINESSES[i], st=bizState[i];
+  if(!st.owned||st.bankrupt||st.underAttack)return 0;
+  let income=b.baseIncome*(1+.35*st.level)*(st.staff.manager?1.25:1)*(1+st.rep/200);
+  if(b.needsSupply){
+    const si=bizIndex(b.needsSupply);
+    if(si<0||!bizState[si].owned) income*=0.5;
+  }
+  if(b.scalesWithHouses) income*=(1+HOUSES.filter(h=>h.owned).length*0.15);
+  return income;
+}
+function bizCap(i){ return BUSINESSES[i].baseIncome*900; } // ~15 minutes of banked income before it stops accruing
+function buyBusiness(i){
+  const b=BUSINESSES[i], st=bizState[i];
+  if(st.owned)return;
+  if(player.cash<b.price){ say('',"can't afford "+b.name,2); return; }
+  player.cash-=b.price;
+  Object.assign(st,makeBizState()); st.owned=true;
+  say('',b.name+' is yours — manage it from the Business Empire menu',3.5);
+  saveGame();
+}
+function upgradeBusiness(i){
+  const b=BUSINESSES[i], st=bizState[i];
+  if(!st.owned||st.bankrupt||st.level>=3)return;
+  const cost=Math.round(b.price*UPGRADE_COST_MULT[st.level]);
+  if(player.cash<cost){ say('','not enough cash to upgrade',2); return; }
+  player.cash-=cost; st.level++;
+  saveGame();
+}
+function hireStaff(i,role){
+  const st=bizState[i];
+  if(!st.owned||st.bankrupt||st.staff[role])return;
+  const cost=STAFF_COST[role];
+  if(player.cash<cost){ say('','not enough cash to hire',2); return; }
+  player.cash-=cost; st.staff[role]=true;
+  saveGame();
+}
+function collectBusiness(i){
+  const st=bizState[i];
+  if(!st.owned||st.till<=0)return;
+  player.cash+=st.till; stats.cashEarned+=st.till; st.till=0; st.uncollectedT=0;
+  saveGame();
+}
+function reopenBusiness(i){
+  const b=BUSINESSES[i], st=bizState[i];
+  if(!st.owned||!st.bankrupt)return;
+  const cost=Math.round(b.price*0.1);
+  if(player.cash<cost){ say('','not enough cash to reopen',2); return; }
+  player.cash-=cost; st.bankrupt=false; st.uncollectedT=0;
+  say('',b.name+' back open for business',2.5);
+  saveGame();
+}
+function spawnTurfWar(i){
+  const b=BUSINESSES[i], st=bizState[i];
+  st.underAttack=true; st.attackT=45;
+  const ev={id:nextEventId++,type:'turfwar',bizIdx:i,x:b.x,y:b.y,t:45,active:true,kills:0,targets:[]};
+  cityEvents.push(ev);
+  const count=3+Math.floor(Math.random()*2);
+  for(let k=0;k<count;k++){ const p=spawnPed(true,false,b.x+rnd(-70,70),b.y+rnd(-70,70)); if(p)p.eventId=ev.id; }
+  say('',b.name+' is under attack — get there and defend it',4);
+}
+let starRaidT=0;
+function updateBusinesses(dt){
+  for(let i=0;i<BUSINESSES.length;i++){
+    const b=BUSINESSES[i], st=bizState[i];
+    if(!st.owned||st.underAttack)continue; // turf-war resolution lives in updateCityEvents
+    if(st.bankrupt)continue;
+    const income=bizIncome(i), cap=bizCap(i);
+    st.till=Math.min(cap, st.till+income*dt);
+    if(st.till>=cap-0.01){
+      st.uncollectedT+=dt;
+      if(st.uncollectedT>1200){ st.bankrupt=true; st.till=0; say('',b.name+' went BANKRUPT from neglect',4); }
+    } else st.uncollectedT=Math.max(0,st.uncollectedT-dt*2);
+    st.rep=clamp(st.rep+(income>0?0.03:-0.02)*dt,0,100);
+    if(b.front){
+      const efficiency=st.staff.accountant?0.6:1;
+      st.launder=clamp(st.launder+income*dt*0.4*efficiency,0,100);
+      if(st.launder>=100){
+        st.launder=0;
+        say('FEDERAL AGENTS','we have a warrant for '+b.name,4);
+        for(let k=0;k<3;k++) spawnPed(false,false,b.x+rnd(-70,70),b.y+rnd(-70,70),'military');
+      }
+    }
+    const tierMult=b.tier==='easy'?0.4:b.tier==='mid'?0.8:1.3;
+    const roll=0.0004*tierMult*(1+st.rep/100)*(st.staff.security?0.5:1)*dt;
+    if(Math.random()<roll){
+      if(st.staff.security&&Math.random()<0.5) say('',b.name+' security handled a turf attempt on their own',3);
+      else spawnTurfWar(i);
+    }
+  }
+  if(wanted>=5){
+    starRaidT+=dt;
+    if(starRaidT>30){
+      starRaidT=0;
+      const targets=[]; for(let i=0;i<BUSINESSES.length;i++) if(bizState[i].owned&&!bizState[i].bankrupt&&!bizState[i].underAttack&&!BUSINESSES[i].front&&BUSINESSES[i].tier==='high') targets.push(i);
+      if(targets.length){
+        const ti=pick(targets), st=bizState[ti];
+        const seized=Math.round(st.till*0.5);
+        st.till-=seized;
+        say('FEDERAL AGENTS',BUSINESSES[ti].name+' got raided — $'+seized.toLocaleString()+' seized',4);
+      }
+    }
+  } else starRaidT=0;
+}
+
 let shopOpen=false;
+let empireOpen=false, selectedBiz=-1;
 let serviceCd=0, radioCd=7, scannerCd=4, eventCd=10, nextEventId=1;
 const cityEvents=[];
 function tryShop(){
   if(dist(player.x,player.y,SHOP.x,SHOP.y)<90) shopOpen=!shopOpen;
   else shopOpen=false;
-  if(shopOpen){ casinoOpen=false; blackMarketOpen=false; vehicleGarageOpen=false; settingsOpen=false; controlsOpen=false; }
+  if(shopOpen){ casinoOpen=false; blackMarketOpen=false; vehicleGarageOpen=false; settingsOpen=false; controlsOpen=false; vaultOpen=false; investOpen=false; }
 }
 function shopBuy(n){
   // Glasswing Order perk: 15% off everything here
@@ -1129,7 +1272,7 @@ const casino={wager:100,rolling:0,dice:[1,1],resultText:''};
 function tryCasino(){
   if(dist(player.x,player.y,CASINO.x,CASINO.y)<90) casinoOpen=!casinoOpen;
   else casinoOpen=false;
-  if(casinoOpen){ shopOpen=false; blackMarketOpen=false; vehicleGarageOpen=false; settingsOpen=false; controlsOpen=false; }
+  if(casinoOpen){ shopOpen=false; blackMarketOpen=false; vehicleGarageOpen=false; settingsOpen=false; controlsOpen=false; vaultOpen=false; investOpen=false; }
 }
 function casinoRoll(){
   if(casino.rolling>0)return;
@@ -1139,7 +1282,7 @@ function casinoRoll(){
   casino.dice=[d1,d2];
   const sum=d1+d2, mult=sum===7?3:sum>=8?2:0;
   const win=Math.floor(casino.wager*mult);
-  if(win>0){ player.cash+=win; stats.cashEarned+=win; casino.resultText='WIN +$'+win; }
+  if(win>0){ player.cash+=win; stats.cashEarned+=win; casino.resultText='WIN +$'+win; if(mult===3)stockShock('realestate',rnd(.01,.03)); }
   else casino.resultText='house wins';
 }
 addEventListener('keydown',e=>{
@@ -1165,7 +1308,7 @@ let blackMarketOpen=false;
 function tryBlackMarket(){
   if(dist(player.x,player.y,dealer.x,dealer.y)<80) blackMarketOpen=!blackMarketOpen;
   else blackMarketOpen=false;
-  if(blackMarketOpen){ shopOpen=false; casinoOpen=false; vehicleGarageOpen=false; settingsOpen=false; controlsOpen=false; }
+  if(blackMarketOpen){ shopOpen=false; casinoOpen=false; vehicleGarageOpen=false; settingsOpen=false; controlsOpen=false; vaultOpen=false; investOpen=false; }
 }
 function blackMarketBuy(n){
   const buy=(cost,fn,label)=>{
@@ -1250,7 +1393,7 @@ function tryDealership(anywhere){
   // V requires standing at DEALERSHIP; ` (Backquote) opens it from anywhere on the map
   const near=anywhere||dist(player.x,player.y,DEALERSHIP.x,DEALERSHIP.y)<90;
   dealershipOpen = near ? !dealershipOpen : false;
-  if(dealershipOpen){ shopOpen=false; casinoOpen=false; blackMarketOpen=false; vehicleGarageOpen=false; settingsOpen=false; controlsOpen=false; }
+  if(dealershipOpen){ shopOpen=false; casinoOpen=false; blackMarketOpen=false; vehicleGarageOpen=false; settingsOpen=false; controlsOpen=false; vaultOpen=false; investOpen=false; }
 }
 function dealerBuy(n){
   const item=currentDealerRoster()[n-1];
@@ -1295,10 +1438,14 @@ addEventListener('keydown',e=>{
 
 // ---------------------- vehicle recall (press O from anywhere — calls in anything you've bought) ----------------------
 let vehicleGarageOpen=false, vehicleRecallCd=0;
-function vehicleRoster(){ return [...DEALER_GROUND,...DEALER_WATER,...DEALER_AIR].filter(it=>ownedVehicleTypes.has(it.type)); }
+function vehicleRoster(){
+  const roster=[...DEALER_GROUND,...DEALER_WATER,...DEALER_AIR].filter(it=>ownedVehicleTypes.has(it.type));
+  if(ownedVehicleTypes.has('yacht')) roster.push({type:'yacht',price:0});
+  return roster;
+}
 function tryVehicleGarage(){
   vehicleGarageOpen=!vehicleGarageOpen;
-  if(vehicleGarageOpen){ shopOpen=false; casinoOpen=false; blackMarketOpen=false; dealershipOpen=false; garageOpen=false; settingsOpen=false; controlsOpen=false; }
+  if(vehicleGarageOpen){ shopOpen=false; casinoOpen=false; blackMarketOpen=false; dealershipOpen=false; garageOpen=false; settingsOpen=false; controlsOpen=false; vaultOpen=false; investOpen=false; }
 }
 function summonVehicle(n){
   if(vehicleRecallCd>0){ say('GARAGE','recall still cooling down ('+Math.ceil(vehicleRecallCd)+'s)',2); return; }
@@ -1306,6 +1453,7 @@ function summonVehicle(n){
   if(!item)return;
   let sp;
   if(item.type==='boat'){ sp={x:BOAT_SPAWN.x,y:BOAT_SPAWN.y}; say('GARAGE','BOAT called in at the harbor dock — no water nearby to drop it next to you',3.5); }
+  else if(item.type==='yacht'){ sp={x:MARINA.x,y:MARINA.y}; say('GARAGE','YACHT called in at the marina',3.5); }
   else{ sp=clearSpot(player.x+rnd(-1,1)*70,player.y+rnd(-1,1)*70); say('GARAGE',item.type.toUpperCase()+' called in — parked nearby',3); }
   const v=spawnCar(item.type,sp.x,sp.y,rnd(TAU),null);
   v.purchased=true;
@@ -1328,7 +1476,7 @@ let settingsOpen=false, controlsOpen=false, restartArm=false, restartArmT=0;
 function gearIconBounds(){ return {x:cv.width-34,y:cv.height-34,r:16}; }
 function toggleSettings(){
   settingsOpen=!settingsOpen; controlsOpen=false;
-  if(settingsOpen){ shopOpen=false; casinoOpen=false; blackMarketOpen=false; dealershipOpen=false; garageOpen=false; vehicleGarageOpen=false; }
+  if(settingsOpen){ shopOpen=false; casinoOpen=false; blackMarketOpen=false; dealershipOpen=false; garageOpen=false; vehicleGarageOpen=false; vaultOpen=false; investOpen=false; }
 }
 function settingsAction(n){
   if(n===1){ settings.music=!settings.music; say('SETTINGS','music '+(settings.music?'on':'off'),1.5); }
@@ -1354,6 +1502,7 @@ addEventListener('keydown',e=>{
   if(e.code==='Escape'&&started){
     if(tut.active) endTutorial(true);
     else if(controlsOpen) controlsOpen=false;
+    else if(empireOpen) empireOpen=false;
     else toggleSettings();
   }
   if(settingsOpen&&/Digit[1-5]/.test(e.code)) settingsAction(+e.code.slice(5));
@@ -1381,7 +1530,13 @@ function collectSaveData(){
     housesOwned:HOUSES.map(h=>h.owned),
     territoryOwners:territories.map(t=>t.owner),
     ownedVehicleTypes:[...ownedVehicleTypes],
-    settings:{...settings}
+    settings:{...settings},
+    vaultFlags:{explosiveAmmo:!!player.explosiveAmmo, infiniteAmmo:!!player.infiniteAmmo, apRounds:!!player.apRounds,
+                nitroAll:!!player.nitroAll, bodyguards:!!player.bodyguards, yacht:!!player.yacht,
+                privateIslandOwned:!!player.privateIslandOwned},
+    bizState:bizState.map(st=>({owned:st.owned, level:st.level, till:st.till, rep:st.rep,
+                                 staff:{...st.staff}, launder:st.launder, bankrupt:st.bankrupt})),
+    stockShares:stockState.map(st=>st.shares)
   };
 }
 function applySaveData(d){
@@ -1401,6 +1556,15 @@ function applySaveData(d){
   if(d.territoryOwners) d.territoryOwners.forEach((o,i)=>{ if(territories[i]) territories[i].owner=o; });
   if(d.ownedVehicleTypes) d.ownedVehicleTypes.forEach(t=>ownedVehicleTypes.add(t));
   if(d.settings) Object.assign(settings,d.settings);
+  if(d.vaultFlags) Object.assign(player,d.vaultFlags);
+  if(d.bizState) d.bizState.forEach((s,i)=>{
+    if(!bizState[i])return;
+    Object.assign(bizState[i],s);
+    bizState[i].staff=Object.assign({manager:false,security:false,accountant:false},s.staff);
+    // turf wars never persist mid-fight — an in-progress attack with no cityEvent to resolve it would be stuck forever
+    bizState[i].underAttack=false; bizState[i].attackT=0;
+  });
+  if(d.stockShares) d.stockShares.forEach((sh,i)=>{ if(stockState[i]&&typeof sh==='number') stockState[i].shares=sh; });
 }
 let wiping=false; // set once wipeSave() starts — blocks every other save path (autosave, beforeunload) from undoing it
 function saveGame(){
@@ -1435,7 +1599,7 @@ function tryGarage(anywhere){
   const near=anywhere||dist(player.x,player.y,GARAGE.x,GARAGE.y)<90;
   if(!player.inCar){ if(near) say('MECHANIC','pull a car in first',2); garageOpen=false; return; }
   garageOpen = near ? !garageOpen : false;
-  if(garageOpen){ shopOpen=false; casinoOpen=false; blackMarketOpen=false; dealershipOpen=false; vehicleGarageOpen=false; settingsOpen=false; controlsOpen=false; }
+  if(garageOpen){ shopOpen=false; casinoOpen=false; blackMarketOpen=false; dealershipOpen=false; vehicleGarageOpen=false; settingsOpen=false; controlsOpen=false; vaultOpen=false; investOpen=false; }
 }
 function garageBuy(n){
   if(!player.inCar||!garageOpen)return;
@@ -1455,6 +1619,62 @@ function garageBuy(n){
     buy(300,()=>{ c.c1=RESPRAY_COLORS[Math.floor(Math.random()*RESPRAY_COLORS.length)]; wanted=Math.max(0,wanted-1); garageCd=6; },'RESPRAYED — heat knocked down a notch');
   }
 }
+
+// ---------------------- THE VAULT — high-end black market (press L) ----------------------
+const VAULT={x:roadCenter(7)-150,y:roadCenter(7)+150};
+const MARINA={x:10*C0+ROAD+150,y:roadCenter(7)}; // bx>=10 is unconditionally water — a guaranteed dock spot, mirrors BOAT_SPAWN
+let vaultOpen=false;
+const VAULT_ITEMS=[
+  {n:1,label:'EXPLOSIVE BULLETS',price:2000000,flag:'explosiveAmmo'},
+  {n:2,label:'INFINITE AMMO',price:5000000,flag:'infiniteAmmo'},
+  {n:3,label:'ARMOR PIERCING ROUNDS',price:1500000,flag:'apRounds'},
+  {n:4,label:'5-STAR BRIBE (use)',price:500000,repeat:true},
+  {n:5,label:'BODYGUARD SQUAD',price:3000000,flag:'bodyguards'},
+  {n:6,label:'NITRO — ALL CARS',price:2000000,flag:'nitroAll'},
+  {n:7,label:'YACHT',price:15000000,flag:'yacht'},
+  {n:8,label:'PRIVATE ISLAND',price:50000000,flag:'privateIslandOwned'}
+];
+function tryVault(){
+  const near=dist(player.x,player.y,VAULT.x,VAULT.y)<90;
+  vaultOpen = near ? !vaultOpen : false;
+  if(vaultOpen){ shopOpen=false; casinoOpen=false; blackMarketOpen=false; dealershipOpen=false; garageOpen=false; vehicleGarageOpen=false; settingsOpen=false; controlsOpen=false; investOpen=false; }
+}
+function spawnBodyguards(){
+  let existing=0; for(const p of peds) if(p.bodyguard) existing++;
+  for(let i=existing;i<3;i++){
+    const p=spawnPed(false,false,player.x+rnd(-70,70),player.y+rnd(-70,70),'ally');
+    if(p) p.bodyguard=true;
+  }
+}
+function vaultBuy(n){
+  const item=VAULT_ITEMS.find(it=>it.n===n);
+  if(!item)return;
+  if(item.repeat){
+    if(player.cash<item.price){ say('THE VAULT','not enough cash for that',2); return; }
+    player.cash-=item.price;
+    wanted=0; militaryActive=false; militaryHeat=0; hunterActive=false; alienActive=false;
+    say('THE VAULT','heat wiped clean — for now',3);
+    return;
+  }
+  if(player[item.flag]){ say('THE VAULT','already own that',2); return; }
+  if(player.cash<item.price){ say('THE VAULT','not enough cash for that',2); return; }
+  player.cash-=item.price;
+  player[item.flag]=true;
+  if(item.flag==='bodyguards'){ spawnBodyguards(); say('THE VAULT','BODYGUARD SQUAD deployed',3); }
+  else if(item.flag==='yacht'){
+    ownedVehicleTypes.add('yacht');
+    const y=spawnCar('yacht',MARINA.x,MARINA.y,rnd(TAU),null);
+    y.purchased=true;
+    say('THE VAULT','YACHT docked at the marina',3.5);
+  }
+  else if(item.flag==='privateIslandOwned'){ say('THE VAULT','PRIVATE ISLAND unlocked — check the far ocean',4); }
+  else say('THE VAULT',item.label+' — pleasure doing business',2.5);
+  saveGame();
+}
+addEventListener('keydown',e=>{
+  if(e.code==='KeyL') tryVault();
+  if(vaultOpen&&/Digit[1-8]/.test(e.code)) vaultBuy(+e.code.slice(5));
+});
 addEventListener('keydown',e=>{
   if(e.code==='KeyU') tryGarage(false);
   if(e.code==='KeyZ') tryGarage(true);
@@ -1544,6 +1764,7 @@ function updateHeist(dt){
       player.cash+=h.bank.payout; stats.cashEarned+=h.bank.payout;
       wanted=Math.max(0,wanted-2); h.bank.cd=600*h.bank.tier;
       say('',h.bank.name+' JOB DONE — +$'+h.bank.payout.toLocaleString()+', still hot though',6);
+      stockShock('banking',-rnd(.03,.08));
       activeHeist=null; saveGame();
     } else if(h.timer<=0){
       say('','never made it out — the vault cash stays behind',3.5);
@@ -1585,8 +1806,9 @@ function updateServices(dt){
     }
   }
   if(!player.inCar){
-    // SAFEHOUSE plus any purchased houses all work as full-service safehouses
-    for(const hp of [SAFEHOUSE,...HOUSES.filter(h=>h.owned)]){
+    // SAFEHOUSE plus any purchased houses (and the private island, once unlocked) all work as full-service safehouses
+    const extraSafehouses=(player.privateIslandOwned&&privateIsland)?[{x:privateIsland.x,y:privateIsland.y,name:'PRIVATE ISLAND'}]:[];
+    for(const hp of [SAFEHOUSE,...HOUSES.filter(h=>h.owned),...extraSafehouses]){
       if(dist(player.x,player.y,hp.x,hp.y)>=74)continue;
       const label=hp===SAFEHOUSE?'SAFEHOUSE':hp.name;
       if(player.hp<player.hpMax||player.armor<25){
@@ -1636,18 +1858,88 @@ function updateChatter(dt){
   } else scannerCd=4;
 }
 
+// ---------------------- Investments — SODIUM EXCHANGE terminal (press I) ----------------------
+const EXCHANGE={x:roadCenter(6)-150,y:roadCenter(3)-150};
+const STOCKS=[
+  {id:'banking',   name:'SALTLINE BANKING CO', sector:'banking',    basePrice:120},
+  {id:'auto',      name:'COMBUSTA MOTORS',     sector:'auto',       basePrice:80},
+  {id:'tech',      name:'VOID DYNAMICS',       sector:'tech',       basePrice:200},
+  {id:'realestate',name:'GILT COAST HOLDINGS', sector:'realestate', basePrice:150},
+  {id:'logistics', name:'PURPLE LOGISTICS',    sector:'logistics',  basePrice:60},
+  {id:'utility',   name:'GRIDWORKS UTILITIES', sector:'utility',    basePrice:40}
+];
+const stockState=STOCKS.map(s=>({price:s.basePrice,shares:0,delisted:false,relistT:0}));
+let investOpen=false, stockCd=4, selectedStock=0;
+function stockShock(sector,pct){
+  STOCKS.forEach((s,i)=>{
+    if(s.sector!==sector)return;
+    const st=stockState[i];
+    if(st.delisted)return;
+    st.price=Math.max(0.5,st.price*(1+pct));
+  });
+}
+function updateStocks(dt){
+  STOCKS.forEach((s,i)=>{
+    const st=stockState[i];
+    if(st.delisted){
+      st.relistT-=dt;
+      if(st.relistT<=0){ st.delisted=false; st.price=s.basePrice*rnd(.6,1.1); say('SODIUM EXCHANGE',s.name+' relists on the exchange',3); }
+    }
+  });
+  stockCd-=dt;
+  if(stockCd<=0){
+    stockCd=rnd(3.5,4.5);
+    let ownedTerritories=0; for(const t of territories) if(t.owner==='player') ownedTerritories++;
+    STOCKS.forEach((s,i)=>{
+      const st=stockState[i];
+      if(st.delisted)return;
+      let drift=rnd(-.02,.02);
+      if(s.id==='realestate') drift+=ownedTerritories*0.006;
+      st.price=clamp(st.price*(1+drift), s.basePrice*0.15, s.basePrice*4);
+      if(st.price<s.basePrice*0.3 && Math.random()<0.01){
+        st.delisted=true; st.shares=0; st.relistT=rnd(60,120); st.price=0;
+        say('SODIUM EXCHANGE',s.name+' just went BANKRUPT — delisted',4);
+      }
+    });
+  }
+}
+function stockBuy(i,qty){
+  const s=STOCKS[i], st=stockState[i];
+  if(!st||st.delisted)return;
+  const cost=st.price*qty;
+  if(player.cash<cost){ say('SODIUM EXCHANGE','not enough cash for that',2); return; }
+  player.cash-=cost; st.shares+=qty;
+}
+function stockSell(i,qty){
+  const st=stockState[i];
+  if(!st||st.delisted)return;
+  qty=Math.min(qty,st.shares);
+  if(qty<=0)return;
+  const proceeds=st.price*qty;
+  player.cash+=proceeds; stats.cashEarned+=proceeds; st.shares-=qty;
+}
+function tryExchange(){
+  if(paused)return;
+  const near=dist(player.x,player.y,EXCHANGE.x,EXCHANGE.y)<90;
+  investOpen = near ? !investOpen : false;
+  if(investOpen){ shopOpen=false; casinoOpen=false; blackMarketOpen=false; dealershipOpen=false; garageOpen=false; vehicleGarageOpen=false; settingsOpen=false; controlsOpen=false; vaultOpen=false; }
+}
+addEventListener('keydown',e=>{ if(e.code==='KeyI'&&!paused) tryExchange(); });
+
 function spawnCityEvent(){
   if(cityEvents.length>2)return;
-  const type=pick(['cashdrop','ambush','tow']);
+  const type=pick(['cashdrop','ambush','tow','stocktip']);
   for(let tries=0;tries<30;tries++){
     const a=rnd(TAU), d=rnd(550,1000);
     const c=clearSpot(player.x+Math.cos(a)*d,player.y+Math.sin(a)*d);
     if(dist(c.x,c.y,player.x,player.y)<420)continue;
     const ev={id:nextEventId++,type,x:c.x,y:c.y,t:42,active:false,kills:0,targets:[]};
+    if(type==='stocktip'){ ev.tipStock=Math.floor(Math.random()*STOCKS.length); ev.tipDir=Math.random()<.5?1:-1; }
     cityEvents.push(ev);
     if(type==='cashdrop')say('K-SALT FM','rumor says a money bag hit the pavement nearby',3);
     if(type==='ambush')say('UNKNOWN','purple jackets are posted up. they look bored. fix that',3);
     if(type==='tow')say('DISPATCH LEAK','stranded driver near you. cash job if you pull up',3);
+    if(type==='stocktip')say('UNKNOWN','someone in the alley says they know something about the market',3);
     return;
   }
 }
@@ -1656,6 +1948,17 @@ function updateCityEvents(dt){
   if(eventCd<=0){ eventCd=rnd(24,38); spawnCityEvent(); }
   for(let i=cityEvents.length-1;i>=0;i--){
     const ev=cityEvents[i]; ev.t-=dt;
+    if(ev.type==='turfwar'){
+      const st=bizState[ev.bizIdx];
+      if(ev.kills>=3){
+        st.underAttack=false; cityEvents.splice(i,1);
+        say('',BUSINESSES[ev.bizIdx].name+' defended — turf war over',3);
+      } else if(ev.t<=0){
+        st.owned=false; st.underAttack=false; cityEvents.splice(i,1);
+        say('',BUSINESSES[ev.bizIdx].name+" got taken — you didn't show up in time",4);
+      }
+      continue;
+    }
     if(ev.t<=0){ cityEvents.splice(i,1); continue; }
     if(!ev.active&&dist(player.x,player.y,ev.x,ev.y)<58){
       ev.active=true; ev.t=50;
@@ -1671,9 +1974,21 @@ function updateCityEvents(dt){
         if(player.inCar){ player.cash+=260; stats.cashEarned+=260; cityEvents.splice(i,1); say('STRANDED DRIVER','you actually stopped. +$260. weird city',3); continue; }
         say('STRANDED DRIVER','bring wheels or bring excuses',3);
       }
+      if(ev.type==='stocktip'){
+        const st=STOCKS[ev.tipStock];
+        say('SHADY NPC','yo... heard '+st.name+' is about to '+(ev.tipDir>0?'pop off':'tank')+'. dont tell anyone',4);
+        ev.tipDelay=rnd(20,30);
+      }
     }
     if(ev.type==='ambush'&&ev.active&&ev.kills>=3){
       player.cash+=420; stats.cashEarned+=420; cityEvents.splice(i,1); say('UNKNOWN','block got quiet. +$420',3);
+    }
+    if(ev.type==='stocktip'&&ev.active){
+      ev.tipDelay-=dt;
+      if(ev.tipDelay<=0){
+        stockShock(STOCKS[ev.tipStock].sector, ev.tipDir*rnd(.04,.09));
+        cityEvents.splice(i,1);
+      }
     }
   }
 }
@@ -1843,7 +2158,7 @@ function stepCar(c,dt,throttle,steerIn,handbrake){
   const offroad=c.cls!=='air'&&isRuralField(c.x,c.y);    // dirt/field driving: slower, looser (air vehicles ignore terrain)
   // garage upgrades: engine tier (vmax+accel), turbo boost (temporary vmax+accel), tires (grip), suspension (turn)
   const engineMult=[1,1.12,1.28,1.5][c.engineTier||0];
-  const boosting=!!(c.turbo&&c.boosting);
+  const boosting=!!((c.turbo||player.nitroAll)&&c.boosting);
   const vmax=c.vmax*(c.upg||1)*engineMult*(boosting?1.35:1)*(c.tirePop ? .55 : 1)*(offroad?.72:1);
   fs+=c.acc*engineMult*(boosting?1.4:1)*throttle*(fs>vmax?0:1)*dt*60*(offroad?.85:1);
   fs*=Math.pow(.988,dt*60);
@@ -2101,6 +2416,8 @@ function nuke(x,y){
     }
   }
   shakeT=Math.max(shakeT,1.2); shakeA=Math.max(shakeA,26);
+  const carlot=BUSINESSES.find(b=>b.id==='carlot');
+  if((dist(x,y,DEALERSHIP.x,DEALERSHIP.y)<500)||(carlot&&dist(x,y,carlot.x,carlot.y)<500)) stockShock('auto',-rnd(.04,.08));
 }
 // ---------------------- APC tank shells (small telegraphed explosive, no building damage) ----------------------
 function updateShells(dt){
@@ -2157,6 +2474,8 @@ function updateMeta(dt){
       say('','territory income +$'+pay,2);
     }
   }
+  updateStocks(dt);
+  updateBusinesses(dt);
 }
 
 // ---------------------- wanted management ----------------------
@@ -2414,6 +2733,7 @@ function updateBullets(dt){
     if(!dead&&pointInBuilding(b.x,b.y)){
       dead=true;
       for(let k=0;k<4;k++)parts.push({x:b.x,y:b.y,vx:rnd(-1.5,1.5),vy:rnd(-1.5,1.5),life:.25,max:.25,c:'#ccb',s:2});
+      if(b.owner==='player'&&player.explosiveAmmo) rocketExplode(b.x,b.y,50,65);
     }
     if(!dead){
       // hit peds
@@ -2421,8 +2741,10 @@ function updateBullets(dt){
         if(p.state==='dead')continue;
         if(b.owner==='enemy'&&(p.gang||p.cop))continue;
         if(dist(p.x,p.y,b.x,b.y)<p.size+3){
-          hurtPed(p,b.dmg,b.owner);
+          const apBonus=(b.owner==='player'&&player.apRounds&&(p.cop||p.military||p.hunter))?1.6:1;
+          hurtPed(p,b.dmg*apBonus,b.owner);
           if(b.owner==='player'&&p.gang&&p.hp<=0&&active&&active.id===1)mData.kills++;
+          if(b.owner==='player'&&player.explosiveAmmo) rocketExplode(b.x,b.y,50,65);
           dead=true;break;
         }
       }
@@ -2431,8 +2753,10 @@ function updateBullets(dt){
       for(const c of cars){
         if(dist(c.x,c.y,b.x,b.y)<c.l/2*.8){
           if(b.owner==='enemy'&&c.driver==='cop')continue;
-          damageCar(c,b.dmg*.7,b.owner); dead=true;
+          const apBonus=(b.owner==='player'&&player.apRounds&&(c.driver==='cop'||c.driver==='military'||c.driver==='hunter'||c.type==='apc'))?1.6:1;
+          damageCar(c,b.dmg*.7*apBonus,b.owner); dead=true;
           for(let k=0;k<3;k++)parts.push({x:b.x,y:b.y,vx:rnd(-2,2),vy:rnd(-2,2),life:.2,max:.2,c:'#ffda60',s:2,glow:true});
+          if(b.owner==='player'&&player.explosiveAmmo) rocketExplode(b.x,b.y,50,65);
           break;
         }
       }
@@ -3119,10 +3443,11 @@ function drawHUD(dt){
   let hy=146;
   if(player.inCar){
     const c=player.inCar, pct=Math.max(0,Math.floor(c.hpNow/c.hp*100));
+    const label=c.cls==='air'?(c.type==='heli'?'HELI':'PLANE'):c.cls==='water'?'BOAT':'CAR';
     g.fillStyle=c.tirePop?'#ff8a40':'rgba(255,255,255,.75)';
-    g.fillText('CAR '+pct+'%'+(c.tirePop?'  TIRES GONE':''),22,hy);
+    g.fillText(label+' '+pct+'%'+(c.tirePop&&!c.cls?'  TIRES GONE':''),22,hy);
     hy+=18;
-    if(c.turbo){ bar(22,hy-6,150,7,(c.boostMeter||0)/100,c.boosting?'#ffd23f':'#3ea6ff'); hy+=18; }
+    if(c.turbo||player.nitroAll){ bar(22,hy-6,150,7,(c.boostMeter||0)/100,c.boosting?'#ffd23f':'#3ea6ff'); hy+=18; }
   }
   // reputation tier
   g.fillStyle='rgba(190,170,255,.8)';g.font='12px system-ui';
@@ -3258,6 +3583,152 @@ function drawHUD(dt){
       else if(i===7) regClick(cv.width/2-170,ry-20,340,26,()=>{blackMarketOpen=false;});
     });
     g.textAlign='center';
+  }
+  // THE VAULT — high-end black market overlay
+  if(vaultOpen){
+    panelChrome(cv.width/2-220,cv.height/2-200,440,400,116,'rgba(10,6,4,.9)','#ff5a3f');
+    const vHdr='THE VAULT', vHw=scrawlWidth(g,vHdr,'bold 22px Impact,Arial Black,system-ui');
+    scrawlText(g,vHdr,cv.width/2-vHw/2,cv.height/2-158,'bold 22px Impact,Arial Black,system-ui','#ff5a3f',17);
+    g.fillStyle='rgba(255,255,255,.55)';g.font='11px system-ui';g.textAlign='center';
+    g.fillText('endgame gear — everything here is a one-time flex',cv.width/2,cv.height/2-134);
+    g.fillStyle='#fff';g.font='13px system-ui';g.textAlign='left';
+    VAULT_ITEMS.forEach((item,i)=>{
+      const ry=cv.height/2-108+i*30;
+      const owned2=!item.repeat&&player[item.flag];
+      g.fillStyle=owned2?'rgba(255,255,255,.4)':'#fff';
+      g.fillText(item.n+' — '+item.label+(owned2?' (owned)':'  $'+item.price.toLocaleString()),cv.width/2-190,ry);
+      if(!owned2) regClick(cv.width/2-200,ry-20,400,26,()=>vaultBuy(item.n));
+    });
+    g.fillStyle='rgba(255,255,255,.6)';g.font='12px system-ui';g.textAlign='center';
+    g.fillText('L — close',cv.width/2,cv.height/2-108+VAULT_ITEMS.length*30+16);
+    regClick(cv.width/2-50,cv.height/2-108+VAULT_ITEMS.length*30,100,22,()=>{vaultOpen=false;});
+    g.textAlign='left';
+  }
+  // SODIUM EXCHANGE — stock market overlay
+  if(investOpen){
+    const rowH=68, panelH=Math.max(320,150+STOCKS.length*rowH+40);
+    const panelY=cv.height/2-panelH/2, panelW=520;
+    panelChrome(cv.width/2-panelW/2,panelY,panelW,panelH,117,'rgba(4,10,16,.9)','#4fd8ff');
+    const eHdr='SODIUM EXCHANGE', eHw=scrawlWidth(g,eHdr,'bold 22px Impact,Arial Black,system-ui');
+    scrawlText(g,eHdr,cv.width/2-eHw/2,panelY+40,'bold 22px Impact,Arial Black,system-ui','#4fd8ff',18);
+    g.textAlign='center';g.fillStyle='rgba(255,255,255,.6)';g.font='11px system-ui';
+    g.fillText('portfolio value: $'+Math.round(stockState.reduce((a,st)=>a+st.price*st.shares,0)).toLocaleString(),cv.width/2,panelY+62);
+    g.textAlign='left';
+    const rowL=cv.width/2-panelW/2+30, rowR=cv.width/2+panelW/2-30;
+    STOCKS.forEach((s,i)=>{
+      const st=stockState[i], ry=panelY+92+i*rowH;
+      const chg=st.delisted?0:(st.price/s.basePrice-1)*100;
+      g.font='13px system-ui'; g.fillStyle=st.delisted?'rgba(255,80,80,.7)':'#fff';
+      g.fillText(s.name,rowL,ry);
+      g.font='11px system-ui'; g.fillStyle='rgba(255,255,255,.65)';
+      g.fillText(st.delisted?'DELISTED — relists in '+Math.ceil(st.relistT)+'s':('$'+st.price.toFixed(2)+'  ('+(chg>=0?'+':'')+chg.toFixed(1)+'%)  ·  '+st.shares+' shares'),rowL,ry+16);
+      if(!st.delisted){
+        const btns=[['BUY 1',()=>stockBuy(i,1)],['BUY 10',()=>stockBuy(i,10)],['SELL 1',()=>stockSell(i,1)],['SELL ALL',()=>stockSell(i,st.shares)]];
+        const bw=(rowR-rowL-3*8)/4, by=ry+26;
+        btns.forEach((b,bi)=>{
+          const bx=rowL+bi*(bw+8);
+          g.fillStyle='rgba(255,255,255,.08)';roughRect(g,bx,by,bw,24,600+i*10+bi);g.fill();
+          g.strokeStyle='rgba(79,216,255,.5)';g.lineWidth=1;g.stroke();
+          g.fillStyle='#fff';g.font='10px system-ui';g.textAlign='center';
+          g.fillText(b[0],bx+bw/2,by+16);
+          g.textAlign='left';
+          regClick(bx,by,bw,24,b[1]);
+        });
+      }
+    });
+    g.fillStyle='rgba(255,255,255,.6)';g.font='12px system-ui';g.textAlign='center';
+    g.fillText('I — close',cv.width/2,panelY+92+STOCKS.length*rowH+16);
+    regClick(cv.width/2-50,panelY+92+STOCKS.length*rowH,100,22,()=>{investOpen=false;});
+    g.textAlign='left';
+  }
+  // Business Empire overlay — opened from the pause screen
+  if(empireOpen){
+    const panelW=620, listRowH=26, mapH=110;
+    const detailH=selectedBiz>=0?165:0;
+    const panelH=140+mapH+BUSINESSES.length*listRowH+detailH+40;
+    const panelX=cv.width/2-panelW/2, panelY=cv.height/2-panelH/2;
+    panelChrome(panelX,panelY,panelW,panelH,118,'rgba(6,10,6,.92)','#9be09b');
+    const bHdr='BUSINESS EMPIRE', bHw=scrawlWidth(g,bHdr,'bold 22px Impact,Arial Black,system-ui');
+    scrawlText(g,bHdr,cv.width/2-bHw/2,panelY+38,'bold 22px Impact,Arial Black,system-ui','#9be09b',19);
+    // schematic empire map — 9 dots at each business's relative world position, colored by status
+    const mapX=panelX+30, mapY=panelY+60, mapW=panelW-60;
+    g.fillStyle='rgba(255,255,255,.05)';roughRect(g,mapX,mapY,mapW,mapH,601);g.fill();
+    g.strokeStyle='rgba(255,255,255,.2)';g.lineWidth=1;g.stroke();
+    BUSINESSES.forEach((b,i)=>{
+      const st=bizState[i];
+      const px=mapX+(b.x/CITY)*mapW, py=mapY+(b.y/CITY)*mapH;
+      let col='rgba(255,255,255,.25)';
+      if(st.owned){
+        col=st.bankrupt?'#555':st.underAttack?(Math.floor(performance.now()/200)%2?'#ff3030':'#ff9060'):TIER_COLOR[b.tier];
+      }
+      g.fillStyle=col;g.beginPath();g.arc(px,py,selectedBiz===i?5.5:4,0,TAU);g.fill();
+      if(selectedBiz===i){ g.strokeStyle='#fff';g.lineWidth=1.5;g.stroke(); }
+    });
+    // list
+    g.font='13px system-ui';g.textAlign='left';
+    BUSINESSES.forEach((b,i)=>{
+      const st=bizState[i], ry=mapY+mapH+22+i*listRowH;
+      g.fillStyle=selectedBiz===i?'rgba(255,255,255,.12)':'rgba(255,255,255,.03)';
+      roughRect(g,panelX+20,ry-16,panelW-40,22,610+i);g.fill();
+      g.fillStyle=TIER_COLOR[b.tier];g.font='bold 12px system-ui';
+      g.fillText(b.name,panelX+30,ry);
+      g.font='11px system-ui';
+      let status;
+      if(!st.owned) status='$'+b.price.toLocaleString()+' to buy';
+      else if(st.bankrupt) status='BANKRUPT — reopen for $'+Math.round(b.price*0.1).toLocaleString();
+      else if(st.underAttack) status='UNDER ATTACK — defend it!';
+      else status='+$'+bizIncome(i).toFixed(1)+'/s · till $'+Math.round(st.till).toLocaleString();
+      g.fillStyle=st.underAttack?'#ff6050':'rgba(255,255,255,.65)';
+      g.fillText(status,panelX+260,ry);
+      regClick(panelX+20,ry-16,panelW-40,22,()=>{selectedBiz=selectedBiz===i?-1:i;});
+    });
+    // detail strip for the selected business
+    if(selectedBiz>=0){
+      const b=BUSINESSES[selectedBiz], st=bizState[selectedBiz];
+      const dy=mapY+mapH+22+BUSINESSES.length*listRowH+14;
+      g.fillStyle='rgba(255,255,255,.06)';roughRect(g,panelX+20,dy,panelW-40,detailH-16,650);g.fill();
+      g.fillStyle='#fff';g.font='11px system-ui';
+      let bx=panelX+34, by=dy+22;
+      const btn=(label,fn,enabled)=>{
+        const bw=g.measureText(label).width+18;
+        g.fillStyle=enabled===false?'rgba(255,255,255,.05)':'rgba(255,255,255,.1)';
+        roughRect(g,bx,by-15,bw,22,660+bx|0);g.fill();
+        g.strokeStyle=enabled===false?'rgba(255,255,255,.15)':'rgba(155,224,155,.5)';g.lineWidth=1;g.stroke();
+        g.fillStyle=enabled===false?'rgba(255,255,255,.35)':'#fff';
+        g.fillText(label,bx+9,by+1);
+        if(enabled!==false) regClick(bx,by-15,bw,22,fn);
+        bx+=bw+10;
+        if(bx>panelX+panelW-140){ bx=panelX+34; by+=28; }
+      };
+      if(!st.owned){
+        btn('BUY $'+b.price.toLocaleString(),()=>buyBusiness(selectedBiz),player.cash>=b.price);
+      } else if(st.bankrupt){
+        const reopenCost=Math.round(b.price*0.1);
+        btn('REOPEN $'+reopenCost.toLocaleString(),()=>reopenBusiness(selectedBiz),player.cash>=reopenCost);
+      } else if(st.underAttack){
+        g.fillStyle='#ff6050';g.fillText('gang takeover in progress — go defend '+b.name+'!',bx,by+1);
+      } else {
+        if(st.till>0) btn('COLLECT $'+Math.round(st.till).toLocaleString(),()=>collectBusiness(selectedBiz));
+        if(st.level<3){
+          const cost=Math.round(b.price*UPGRADE_COST_MULT[st.level]);
+          btn('UPGRADE (Lv'+st.level+'→'+(st.level+1)+') $'+cost.toLocaleString(),()=>upgradeBusiness(selectedBiz),player.cash>=cost);
+        } else btn('MAX LEVEL',()=>{},false);
+        if(!st.staff.manager) btn('HIRE MANAGER $'+STAFF_COST.manager.toLocaleString(),()=>hireStaff(selectedBiz,'manager'),player.cash>=STAFF_COST.manager);
+        if(!st.staff.security) btn('HIRE SECURITY $'+STAFF_COST.security.toLocaleString(),()=>hireStaff(selectedBiz,'security'),player.cash>=STAFF_COST.security);
+        if(!st.staff.accountant) btn('HIRE ACCOUNTANT $'+STAFF_COST.accountant.toLocaleString(),()=>hireStaff(selectedBiz,'accountant'),player.cash>=STAFF_COST.accountant);
+        if(b.needsSupply&&!bizState[bizIndex(b.needsSupply)].owned){
+          by+=28; bx=panelX+34;
+          g.fillStyle='rgba(255,180,80,.8)';g.fillText('missing supply: needs a '+BUSINESSES[bizIndex(b.needsSupply)].name+' (half income)',bx,by+1);
+        }
+        if(b.front){
+          by+=28; bx=panelX+34;
+          g.fillStyle='rgba(255,255,255,.55)';g.fillText('laundering meter: '+Math.round(st.launder)+'%',bx,by+1);
+        }
+      }
+    }
+    g.fillStyle='rgba(255,255,255,.6)';g.font='12px system-ui';g.textAlign='center';
+    g.fillText('ESC — close',cv.width/2,panelY+panelH-14);
+    regClick(cv.width/2-50,panelY+panelH-30,100,22,()=>{empireOpen=false;});
   }
   // gambling den overlay
   if(casinoOpen){
@@ -3464,7 +3935,7 @@ function drawHUD(dt){
   if(player.dead){
     g.fillStyle='rgba(60,0,0,.45)';g.fillRect(0,0,cv.width,cv.height);
     g.fillStyle='#fff';g.font='bold 54px system-ui';
-    g.fillText('WASTED',cv.width/2,cv.height/2);
+    g.fillText(player.deathMsg||'WASTED',cv.width/2,cv.height/2);
   }
   g.textAlign='left';
   drawGearIcon();
@@ -3569,6 +4040,15 @@ function drawMinimap(){
   for(const bank of BANKS) mmLandmark(mx,my,bank.x,bank.y,'#ff3060','$');
   for(const h of HOUSES) if(!h.owned) mmLandmark(mx,my,h.x,h.y,'#ffcf70','H');
   for(const isl of islands) mmLandmark(mx,my,isl.x,isl.y,'#e0c080','I');
+  mmLandmark(mx,my,VAULT.x,VAULT.y,'#ff5a3f','L');
+  mmLandmark(mx,my,EXCHANGE.x,EXCHANGE.y,'#4fd8ff','$');
+  if(player.yacht) mmLandmark(mx,my,MARINA.x,MARINA.y,'#f4f0e0','Y');
+  if(player.privateIslandOwned) mmLandmark(mx,my,privateIsland.x,privateIsland.y,'#ffe0a0','P');
+  BUSINESSES.forEach((b,bi2)=>{
+    const st=bizState[bi2];
+    const col=!st.owned?'rgba(255,255,255,.3)':st.bankrupt?'#555':st.underAttack?(Math.floor(performance.now()/200)%2?'#ff3030':'#ff9060'):TIER_COLOR[b.tier];
+    mmLandmark(mx,my,b.x,b.y,col,'B');
+  });
   g.fillStyle='#4fa3e0';
   for(const ev of cityEvents){g.beginPath();g.arc(mx+ev.x*mmScale,my+ev.y*mmScale,3.6,0,TAU);g.fill();}
   // cops (incl. cop boats) — flash blue/red while wanted, dim red otherwise
@@ -3653,7 +4133,7 @@ function updatePlayer(dt){
     const steer=(keys.KeyD?1:0)-(keys.KeyA?1:0);
     c.steer=lerp(c.steer,steer,.2);
     // turbo: hold SHIFT to burn the boost meter, regens when not held
-    if(c.turbo){
+    if(c.turbo||player.nitroAll){
       if(keys.ShiftLeft&&(c.boostMeter||0)>0){ c.boosting=true; c.boostMeter=Math.max(0,c.boostMeter-40*dt); }
       else{ c.boosting=false; c.boostMeter=Math.min(100,(c.boostMeter===undefined?100:c.boostMeter)+15*dt); }
     } else c.boosting=false;
@@ -3720,6 +4200,7 @@ function beginGame(){
   if(!tut.active&&!hasSave)startTutorial();
   if(tut.active)say('','welcome to SODIUM CITY. follow the tutorial — or ESC to skip it',5);
   else say('',hasSave?'welcome back — your progress was restored':'orange markers = missions. green = shop. dont get wasted',5);
+  if(player.bodyguards) spawnBodyguards();
 }
 document.getElementById('title').addEventListener('click',()=>{
   document.getElementById('title').style.display='none';
@@ -3823,6 +4304,15 @@ function frame(now){
   drawMarker(DEALERSHIP.x,DEALERSHIP.y,'#ff9040','DEALERSHIP (V/`)');
   drawMarker(GARAGE.x,GARAGE.y,'#40c0ff','GARAGE (U/Z)');
   drawMarker(dealer.x,dealer.y,'#a0ff60','BLACK MARKET (K)');
+  drawMarker(VAULT.x,VAULT.y,'#ff5a3f','THE VAULT (L)');
+  drawMarker(EXCHANGE.x,EXCHANGE.y,'#4fd8ff','SODIUM EXCHANGE (I)');
+  if(player.yacht) drawMarker(MARINA.x,MARINA.y,'#f4f0e0','MARINA — YACHT (O to recall)');
+  if(player.privateIslandOwned&&privateIsland) drawMarker(privateIsland.x,privateIsland.y,'#ffe0a0','PRIVATE ISLAND');
+  BUSINESSES.forEach((b,bi3)=>{
+    const st=bizState[bi3];
+    if(!st.owned) drawMarker(b.x,b.y,TIER_COLOR[b.tier],'BUY '+b.name+' $'+b.price.toLocaleString()+' (Business Empire)');
+    else if(st.underAttack) drawMarker(b.x,b.y,'#ff3030',b.name+' — UNDER ATTACK, DEFEND IT');
+  });
   for(const cu of CULTS) drawMarker(cu.x,cu.y,cu.color,player.cultId===cu.id?cu.name+' (member — C to leave)':(player.cultId?cu.name+' (C to switch)':cu.name+' (C to join)'));
   if(!activeHeist) for(const bank of BANKS) if(bank.cd<=0) drawMarker(bank.x,bank.y,'#ff3060','ROB '+bank.name+' T'+bank.tier+' (M)');
   if(activeHeist&&activeHeist.stage===1) drawMarker(activeHeist.escapeX,activeHeist.escapeY,'#4fa3e0','ESCAPE');
@@ -4431,9 +4921,12 @@ for(const m of missions){ const c=clearSpot(m.x,m.y); m.x=c.x; m.y=c.y; }
 { const c=clearSpot(CASINO.x,CASINO.y); CASINO.x=c.x; CASINO.y=c.y; }
 { const c=clearSpot(DEALERSHIP.x,DEALERSHIP.y); DEALERSHIP.x=c.x; DEALERSHIP.y=c.y; }
 { const c=clearSpot(GARAGE.x,GARAGE.y); GARAGE.x=c.x; GARAGE.y=c.y; }
+{ const c=clearSpot(VAULT.x,VAULT.y); VAULT.x=c.x; VAULT.y=c.y; }
+{ const c=clearSpot(EXCHANGE.x,EXCHANGE.y); EXCHANGE.x=c.x; EXCHANGE.y=c.y; }
 for(const cu of CULTS){ const c=clearSpot(cu.x,cu.y); cu.x=c.x; cu.y=c.y; }
 for(const bank of BANKS){ const c=clearSpot(bank.x,bank.y); bank.x=c.x; bank.y=c.y; }
 for(const h of HOUSES){ const c=clearSpot(h.x,h.y); h.x=c.x; h.y=c.y; }
+for(const b of BUSINESSES){ const c=clearSpot(b.x,b.y); b.x=c.x; b.y=c.y; }
 for(const m of missions){ if(m.id===3){const c=clearSpot(CHOP.x+140,CHOP.y);m.x=c.x;m.y=c.y;} if(m.id===4){const c=clearSpot(SAFEHOUSE.x+80,SAFEHOUSE.y-80);m.x=c.x;m.y=c.y;} }
 for(const pk of pickups){ const c=clearSpot(pk.x,pk.y); pk.x=c.x; pk.y=c.y; }
 
@@ -4442,7 +4935,7 @@ loadGame(); // restore any prior save before the title screen is even clicked
 // extra keys: F toggles view, ESC skips tutorial / opens settings (see settings section), P pauses / shows stats
 addEventListener('keydown',e=>{
   if(e.code==='KeyF'&&started&&!player.dead)fpMode=!fpMode;
-  if(e.code==='KeyP'&&started&&!player.dead)paused=!paused;
+  if(e.code==='KeyP'&&started&&!player.dead){ paused=!paused; if(paused)empireOpen=false; }
 });
 
 // ---------------------- pause / stats screen ----------------------
@@ -4468,6 +4961,10 @@ function drawPauseScreen(){
     'VEHICLES UNLOCKED  '+ownedVehicleTypes.size+' / '+(DEALER_GROUND.length+DEALER_WATER.length+DEALER_AIR.length)
   ];
   lines.forEach((s,i)=>g.fillText(s,cv.width/2-170,cv.height/2-135+i*30));
+  const ownedBiz=bizState.filter(st=>st.owned).length;
+  g.fillStyle='#4fd8ff';g.font='bold 15px system-ui';
+  g.fillText('I — BUSINESS EMPIRE ('+ownedBiz+'/'+BUSINESSES.length+' owned)',cv.width/2-170,cv.height/2-135+lines.length*30);
+  regClick(cv.width/2-170,cv.height/2-135+lines.length*30-18,340,26,()=>{empireOpen=true; paused=false; selectedBiz=-1;});
   g.fillStyle='rgba(255,255,255,.6)';g.font='13px system-ui';g.textAlign='center';
   g.fillText('P — resume',cv.width/2,cv.height/2+195);
   g.textAlign='left';
