@@ -329,7 +329,7 @@ function genCity(){
     // parks
     if(d!=='harbor' && d!=='island' && !OPEN_DISTRICTS.has(d) && R()<0.10){
       parkBlocks.add(key);
-      for(let i=0;i<7;i++) trees.push({x:x0+40+R()*(BLOCK-80), y:y0+40+R()*(BLOCK-80), r:16+R()*12});
+      for(let i=0;i<7;i++) trees.push({x:x0+40+R()*(BLOCK-80), y:y0+40+R()*(BLOCK-80), r:16+R()*12, type:d==='industrial'?'dead':'round'});
       continue;
     }
     // subdivide block into buildings — denser/tighter lots in suburb & old town, sprawling single lots in hills, open districts & islands
@@ -364,11 +364,24 @@ function genCity(){
       if((d==='downtown'||d==='harbor') && b.w>40 && R()<0.16){
         b.neon={hue:NEON_HUES[Math.floor(R()*NEON_HUES.length)],txt:NEON_TXT[Math.floor(R()*NEON_TXT.length)],flick:R()*10};
       }
+      // rooftop micro-details — seen from above since this is a top-down view, so these sit inside the footprint
+      b.watertower = d==='downtown' && b.tall>2.3 && R()<0.14;
+      b.acUnits = (!OPEN_DISTRICTS.has(d) && d!=='island' && d!=='hills' && R()<0.4) ? 1+Math.floor(R()*2) : 0;
+      b.vents = d==='industrial' && R()<0.45;
+      b.dish = (d==='suburb'||d==='oldtown'||d==='hills') && R()<0.28;
+      b.solar = (d==='hills'||d==='suburb') && !b.dish && R()<0.16;
+      b.laundry = (d==='oldtown'||d==='suburb') && R()<0.2;
+      b.pigeons = R()<0.3;
+      // brighter ground-floor storefront glow for commercial districts (independent of the rarer neon sign)
+      b.storefront = (d==='downtown'||d==='harbor') && b.w>34 && R()<0.5;
+      // grimy wall art — grittier districts only
+      b.graffiti = (d==='industrial'||d==='wasteland'||d==='oldtown') && R()<0.22;
       buildings.push(b);
       blockMap.get(key).push(buildings.length-1);
-      if((d==='suburb'||d==='oldtown'||d==='hills') && R()<.7) trees.push({x:x0+i*gw+gw/2+(R()-.5)*60, y:y0+j*gh+gh-14, r:12+R()*8});
-      if(OPEN_DISTRICTS.has(d) && R()<(d==='forest'?.85:.5)) trees.push({x:x0+i*gw+gw*.15+(R()-.5)*40, y:y0+j*gh+gh*.85+(R()-.5)*40, r:14+R()*10});
-      if(d==='island' && R()<.8) trees.push({x:x0+i*gw+gw*.75+(R()-.5)*60, y:y0+j*gh+gh*.3+(R()-.5)*60, r:10+R()*8});
+      const waterfront=isWaterfront(x0+i*gw+gw/2,y0+j*gh+gh/2);
+      if((d==='suburb'||d==='oldtown'||d==='hills') && R()<.7) trees.push({x:x0+i*gw+gw/2+(R()-.5)*60, y:y0+j*gh+gh-14, r:12+R()*8, type:waterfront?'palm':'round'});
+      if(OPEN_DISTRICTS.has(d) && R()<(d==='forest'?.85:.5)) trees.push({x:x0+i*gw+gw*.15+(R()-.5)*40, y:y0+j*gh+gh*.85+(R()-.5)*40, r:14+R()*10, type:d==='forest'?'pine':d==='wasteland'?'dead':'round'});
+      if(d==='island' && R()<.8) trees.push({x:x0+i*gw+gw*.75+(R()-.5)*60, y:y0+j*gh+gh*.3+(R()-.5)*60, r:10+R()*8, type:'palm'});
     }
   }
   // streetlights at intersections (skip deep water and the unlit rural band)
@@ -379,6 +392,61 @@ function genCity(){
   }
 }
 genCity();
+
+// ---------------------- ambient civilians (purely cosmetic — enter/exit buildings near their door) ----------------------
+// Deliberately a separate array from `peds`: no combat AI, no wanted-level interaction, never touched by
+// hurtPed/scareNearby/witness logic. That keeps this additive — it can't affect missions, cops, or gangs.
+const ambientPeds=[];
+function initAmbientPeds(){
+  const homes=[];
+  for(let i=0;i<buildings.length;i++){
+    const b=buildings[i];
+    if(b.door && !OPEN_DISTRICTS.has(b.d) && b.d!=='island') homes.push(i);
+  }
+  const count=Math.min(70,Math.floor(homes.length*0.12));
+  for(let k=0;k<count;k++){
+    const bi=pick(homes), b=buildings[bi];
+    ambientPeds.push({
+      home:bi, x:b.x+b.w/2, y:b.y+b.h+6, a:-Math.PI/2, phase:rnd(TAU),
+      state:'inside', waitT:rnd(2,50), pauseT:0,
+      size:rnd(6.5,8.5), color:pick(['#d9b38c','#8c6f5a','#c48','#48c','#4c8','#e0c060','#b0b0c0','#d07040']),
+      tx:0, ty:0
+    });
+  }
+}
+initAmbientPeds();
+function updateAmbientPeds(dt){
+  for(const p of ambientPeds){
+    const b=buildings[p.home];
+    if(b.destroyed) continue; // stays "inside" forever — nothing to walk out to anymore
+    const doorX=b.x+b.w/2, doorY=b.y+b.h+6;
+    if(p.state==='inside'){
+      p.waitT-=dt;
+      if(p.waitT<=0){
+        p.x=doorX; p.y=doorY; p.a=Math.PI/2;
+        const a=rnd(0.6,Math.PI-0.6); // roughly outward/away from the wall, not sideways through it
+        p.tx=doorX+Math.cos(a)*rnd(-70,70); p.ty=doorY+Math.sin(a)*rnd(20,70);
+        p.state='out'; p.pauseT=rnd(2,8);
+      }
+      continue;
+    }
+    if(p.state==='out'){
+      if(dist(p.x,p.y,p.tx,p.ty)<4){
+        p.pauseT-=dt; p.phase+=dt*1.5;
+        if(p.pauseT<=0) p.state='return';
+      } else {
+        p.a=Math.atan2(p.ty-p.y,p.tx-p.x);
+        p.x+=Math.cos(p.a)*1.1*dt*60; p.y+=Math.sin(p.a)*1.1*dt*60; p.phase+=dt*7;
+      }
+    } else if(p.state==='return'){
+      if(dist(p.x,p.y,doorX,doorY)<4){ p.state='inside'; p.waitT=rnd(15,60); }
+      else {
+        p.a=Math.atan2(doorY-p.y,doorX-p.x);
+        p.x+=Math.cos(p.a)*1.1*dt*60; p.y+=Math.sin(p.a)*1.1*dt*60; p.phase+=dt*7;
+      }
+    }
+  }
+}
 
 // collision: circle vs nearby building rects, returns pushed position
 function nearBuildingIdx(x,y){
@@ -2862,10 +2930,34 @@ function drawWorld(){
     if(c>vy0&&c<vy1&&roadMaxX>0){ const[,sy]=W2S(0,c); g.beginPath();g.moveTo(0,sy);g.lineTo(roadMaxX,sy);g.stroke(); }
   }
   g.setLineDash([]);
-  // sidewalks (thin light border around blocks in view)
-  g.strokeStyle=`rgba(160,160,150,${.35-dk*.2})`; g.lineWidth=10;
   const bx0=clamp(Math.floor((vx0-ROAD)/C0),0,N-1), bx1=clamp(Math.floor((vx1-ROAD)/C0),0,N-1);
   const by0=clamp(Math.floor((vy0-ROAD)/C0),0,N-1), by1=clamp(Math.floor((vy1-ROAD)/C0),0,N-1);
+  // manholes, faded crosswalks & lane arrows at paved intersections — seeded per-intersection so they never flicker frame to frame
+  for(let i=bx0;i<=bx1+1;i++)for(let j=by0;j<=by1+1;j++){
+    if(i>=OCEAN_START||j>=RURAL_START) continue;
+    const iwx=roadCenter(i), iwy=roadCenter(j);
+    if(iwx<vx0-60||iwx>vx1+60||iwy<vy0-60||iwy>vy1+60) continue;
+    const[isx,isy]=W2S(iwx,iwy);
+    const Ri=mulberry(i*4177+j*883+41);
+    if(Ri()<0.5){
+      g.fillStyle=`rgba(210,210,200,${.24-dk*.12})`;
+      for(let s=-3;s<=3;s++) g.fillRect(isx+s*10-3, isy-ROAD/2-2, 6, ROAD*0.4);
+    }
+    if(Ri()<0.35){
+      g.save();g.translate(isx-ROAD*0.32,isy); g.rotate(Ri()<0.5?0:Math.PI);
+      g.fillStyle=`rgba(210,210,200,${.16-dk*.08})`;
+      g.beginPath();g.moveTo(-8,10);g.lineTo(8,10);g.lineTo(0,-10);g.closePath();g.fill();
+      g.restore();
+    }
+    if(Ri()<0.4){
+      g.fillStyle=`rgba(15,15,14,${.55-dk*.12})`;
+      g.beginPath();g.arc(isx+16,isy+16,6.5,0,TAU);g.fill();
+      g.strokeStyle='rgba(0,0,0,.5)';g.lineWidth=1;
+      g.beginPath();g.moveTo(isx+9,isy+16);g.lineTo(isx+23,isy+16);g.moveTo(isx+16,isy+9);g.lineTo(isx+16,isy+23);g.stroke();
+    }
+  }
+  // sidewalks (thin light border around blocks in view) + per-district ground texture + clutter
+  g.strokeStyle=`rgba(160,160,150,${.35-dk*.2})`; g.lineWidth=10;
   for(let i=bx0;i<=bx1;i++)for(let j=by0;j<=by1;j++){
     if(waterBlocks.has(i+','+j)){
       if(i<10){ // river/lake tile — the harbor ocean itself is the big gradient above
@@ -2879,10 +2971,19 @@ function drawWorld(){
       continue;
     }
     const[sx,sy]=W2S(i*C0+ROAD,j*C0+ROAD);
+    const distr=district(i,j);
+    const special=parkBlocks.has(i+','+j)||dockBlocks.has(i+','+j)||ruralFieldBlocks.has(i+','+j)||islandBlocks.has(i+','+j);
+    if(!special) drawGroundBase(i,j,sx,sy,distr,dk);
     g.strokeRect(sx-5,sy-5,BLOCK+10,BLOCK+10);
     if(parkBlocks.has(i+','+j)){
       g.fillStyle=`rgb(${44-dk*18},${86-dk*36},${44-dk*18})`;
       g.fillRect(sx,sy,BLOCK,BLOCK);
+      const Rp=mulberry(i*613+j*337+5);
+      for(let s=0;s<16;s++){
+        const px=sx+Rp()*BLOCK, py=sy+Rp()*BLOCK, pr=8+Rp()*18, darker=Rp()<0.5;
+        g.fillStyle=darker?`rgba(20,50,20,${.16-dk*.08})`:`rgba(90,140,70,${.14-dk*.06})`;
+        g.beginPath();g.ellipse(px,py,pr,pr*.6,Rp()*TAU,0,TAU);g.fill();
+      }
     }
     if(dockBlocks.has(i+','+j)){
       g.fillStyle=`rgb(${110-dk*40},${88-dk*34},${60-dk*24})`;
@@ -2899,9 +3000,9 @@ function drawWorld(){
       }
     }
     if(islandBlocks.has(i+','+j)){
-      // sandy beach ring around the hut's little plot — a visible island, not just a block that happens to have a building
-      g.fillStyle=`rgb(${196-dk*70},${172-dk*62},${118-dk*44})`;
-      g.beginPath();g.ellipse(sx+BLOCK/2,sy+BLOCK/2,BLOCK*.62,BLOCK*.6,0,0,TAU);g.fill();
+      drawIslandBlock(i,j,sx,sy,dk);
+    } else if(!special){
+      drawBlockClutter(i,j,sx,sy,distr,dk);
     }
   }
   // decals (under everything moving)
@@ -2946,28 +3047,59 @@ function drawWorld(){
         for(let k=0;k<3;k++) g.fillRect(sx+R()*b.w,sy+b.h*0.3+R()*b.h*0.3,1,10+R()*14);
         continue;
       }
-      // shadow
+      // shadow — longer for taller buildings, direction/length tied to time of day (matches car/ped shadows below)
       g.fillStyle=`rgba(0,0,0,${.25-dk*.12})`;
       rr(g,sx+sv.x*shLen*b.tall,sy+sv.y*shLen*b.tall,b.w,b.h,10); g.fill();
-      // body with subtle vertical gradient
+      // body with subtle vertical gradient — stronger contrast on taller buildings for a pseudo-3D "imposing" look
+      const heightBoost=clamp((b.tall-1)*20,0,60);
       const grad=g.createLinearGradient(sx,sy,sx,sy+b.h);
-      grad.addColorStop(0,b.c);
-      grad.addColorStop(1,shade(b.c,-24));
+      grad.addColorStop(0,shade(b.c,heightBoost*0.15));
+      grad.addColorStop(1,shade(b.c,-24-heightBoost*0.5));
       g.fillStyle=grad; rr(g,sx,sy,b.w,b.h,b.d==='downtown'?6:12); g.fill();
       g.strokeStyle='rgba(0,0,0,.25)';g.lineWidth=2;g.stroke();
-      // windows
+      if(b.tall>1.6){ // top-edge highlight — reads as extra height on an otherwise flat 2D rect
+        g.strokeStyle=`rgba(255,255,255,${clamp((b.tall-1.6)*0.15,0,0.3)})`;g.lineWidth=1.5;
+        g.beginPath();g.moveTo(sx+3,sy+2);g.lineTo(sx+b.w-3,sy+2);g.stroke();
+      }
+      // windows — warm glow at night (existing system, kept intact), faint district-tinted glass by day
+      const dayWinColor=(b.d==='downtown'||b.d==='harbor')?`rgba(190,225,255,${.16-dk*.1})`
+        :(b.d==='suburb'||b.d==='oldtown'||b.d==='hills')?`rgba(255,235,200,${.16-dk*.1})`
+        :`rgba(210,205,195,${.14-dk*.1})`;
       const cols=Math.max(2,Math.floor(b.w/34)), rows=Math.max(2,Math.floor(b.h/34));
       for(let wx2=0;wx2<cols;wx2++)for(let wy2=0;wy2<rows;wy2++){
         const lit = dk>.45 && ((wx2*7+wy2*13+idx)%9 < 3);
-        g.fillStyle=lit?'rgba(255,220,120,.85)':`rgba(255,255,255,${.14-dk*.1})`;
+        g.fillStyle=lit?'rgba(255,220,120,.85)':dayWinColor;
         rr(g,sx+8+wx2*(b.w-16)/cols, sy+8+wy2*(b.h-16)/rows, (b.w-16)/cols-7,(b.h-16)/rows-7,3);
         g.fill();
       }
       // subtle horizontal banding — panel/brick texture, purely geometric (no per-frame RNG)
       g.fillStyle='rgba(0,0,0,.06)';
       for(let by2=10;by2<b.h;by2+=16) g.fillRect(sx,sy+by2,b.w,2);
-      // ground-floor entrance
-      if(b.door){ g.fillStyle='rgba(20,16,10,.55)'; rr(g,sx+b.w/2-9,sy+b.h-16,18,16,2); g.fill(); }
+      // brighter commercial storefront band — glows warm at night like an always-open shopfront
+      if(b.storefront){
+        g.fillStyle = dk>0.4 ? 'rgba(255,196,110,.5)' : 'rgba(255,255,255,.22)';
+        rr(g,sx+4,sy+b.h-24,b.w-8,13,3); g.fill();
+      }
+      // grimy wall art on grittier districts
+      if(b.graffiti){
+        const Rg=mulberry(idx*613+9);
+        const gw2=b.w*(0.3+Rg()*0.3), gh2=b.h*(0.14+Rg()*0.08);
+        const gx2=sx+Rg()*(b.w-gw2), gy2=sy+b.h*(0.3+Rg()*0.35);
+        const hues=['#ff2fae','#2ff0ff','#5cff6a','#ffea2f'];
+        const hue=hues[Math.floor(Rg()*hues.length)];
+        g.globalAlpha=0.45; g.fillStyle=hue; roughRect(g,gx2,gy2,gw2,gh2,idx*3+1); g.fill();
+        g.globalAlpha=1;
+        sprayDots(g,gx2,gy2,gw2,gh2,hue,idx*5+2,10);
+      }
+      // ground-floor entrance — a little step/mat, glowing warmly at night like the windows
+      if(b.door){
+        const doorLit=dk>0.4;
+        g.fillStyle=doorLit?'rgba(255,200,120,.35)':'rgba(0,0,0,.12)';
+        rr(g,sx+b.w/2-11,sy+b.h-6,22,6,2); g.fill();
+        g.fillStyle=doorLit?'rgba(255,210,130,.9)':'rgba(20,16,10,.6)';
+        rr(g,sx+b.w/2-9,sy+b.h-16,18,16,2); g.fill();
+        g.strokeStyle='rgba(0,0,0,.35)';g.lineWidth=1;g.strokeRect(sx+b.w/2-9,sy+b.h-16,18,16);
+      }
       // suburb awning, or a chimney + pitched-roof triangle for a different silhouette (suburb & old town)
       if(b.awning){ g.fillStyle=shade2(b.c,-60); g.fillRect(sx+4,sy+b.h*0.55,b.w-8,8); }
       if(b.pitchedRoof){
@@ -3034,25 +3166,281 @@ function drawWorld(){
           g.globalAlpha=1; g.textAlign='left';
         }
       }
+      drawRoofDetails(b,idx,sx,sy,dk);
     }
   }
   // trees
   for(const t of trees){
     const[sx,sy]=W2S(t.x,t.y);
     if(sx<-40||sy<-40||sx>cv.width+40||sy>cv.height+40)continue;
-    const sway=Math.sin(performance.now()/900+t.x)*2;
-    g.fillStyle=`rgba(0,0,0,${.22-dk*.12})`;
-    g.beginPath();g.arc(sx+sv.x*10,sy+sv.y*10,t.r,0,TAU);g.fill();
-    g.fillStyle=`rgb(${30-dk*10},${96-dk*40},${34-dk*12})`;
-    g.beginPath();g.arc(sx+sway,sy,t.r,0,TAU);g.fill();
-    g.fillStyle=`rgb(${40-dk*12},${116-dk*46},${44-dk*14})`;
-    g.beginPath();g.arc(sx+sway-t.r*.25,sy-t.r*.25,t.r*.6,0,TAU);g.fill();
+    drawTreeSprite(t,sx,sy,dk,sv);
   }
 }
 function shade(hex,amt){
   const n=parseInt(hex.slice(1),16);
   let r=(n>>16)+amt,gg=((n>>8)&255)+amt,b=(n&255)+amt;
   return `rgb(${clamp(r,0,255)},${clamp(gg,0,255)},${clamp(b,0,255)})`;
+}
+// ---------------------- rendering: ground/road/rooftop micro-detail ----------------------
+// Everything below is purely decorative and drawn with a seeded mulberry() RNG keyed off stable
+// block/building coordinates — same seed every frame means zero flicker, no extra state to store.
+function districtGroundTint(d,dk){
+  const T={
+    downtown:[34,36,42], suburb:[68,58,44], industrial:[44,42,38], harbor:[50,46,40],
+    oldtown:[60,44,36], hills:[74,70,60], forest:[30,36,26]
+  }[d]||[50,50,46];
+  return `rgb(${clamp(T[0]-dk*20,0,255)},${clamp(T[1]-dk*20,0,255)},${clamp(T[2]-dk*18,0,255)})`;
+}
+function drawGroundBase(i,j,sx,sy,d,dk){
+  g.fillStyle=districtGroundTint(d,dk);
+  g.fillRect(sx,sy,BLOCK,BLOCK);
+  const R=mulberry(i*92821+j*6151+3);
+  g.strokeStyle=`rgba(0,0,0,${.16-dk*.07})`;g.lineWidth=1;
+  const cracks=1+Math.floor(R()*3);
+  for(let c=0;c<cracks;c++){
+    let cx=sx+R()*BLOCK, cy=sy+R()*BLOCK;
+    g.beginPath();g.moveTo(cx,cy);
+    const segs=2+Math.floor(R()*3);
+    for(let s=0;s<segs;s++){ cx+=(R()-.5)*40; cy+=(R()-.5)*40; g.lineTo(cx,cy); }
+    g.stroke();
+  }
+  const patches=Math.floor(R()*3);
+  for(let p=0;p<patches;p++){
+    const px=sx+R()*BLOCK, py=sy+R()*BLOCK, pr=14+R()*22;
+    g.fillStyle=`rgba(90,72,48,${.09-dk*.04})`;
+    g.beginPath();g.ellipse(px,py,pr,pr*.6,R()*TAU,0,TAU);g.fill();
+  }
+  // sidewalk expansion-joint lines along the block border
+  g.strokeStyle=`rgba(255,255,255,${.05-dk*.02})`;g.lineWidth=1;
+  for(let k=1;k<8;k++){
+    g.beginPath();g.moveTo(sx+k*BLOCK/8,sy-5);g.lineTo(sx+k*BLOCK/8,sy+8);g.stroke();
+    g.beginPath();g.moveTo(sx+k*BLOCK/8,sy+BLOCK-8);g.lineTo(sx+k*BLOCK/8,sy+BLOCK+5);g.stroke();
+  }
+}
+function drawBlockClutter(i,j,sx,sy,d,dk){
+  const R=mulberry(i*3559+j*8081+71);
+  if(d==='industrial'&&R()<0.5){ // sagging power line between utility poles
+    g.fillStyle='#2a2622';
+    const px=sx+8,py=sy+8, nx=sx+BLOCK+8;
+    g.fillRect(px-2,py-32,4,36);
+    g.strokeStyle='rgba(20,18,16,.5)';g.lineWidth=1;
+    g.beginPath();g.moveTo(px,py-30);g.quadraticCurveTo((px+nx)/2,py-16,nx,py-30);g.stroke();
+  }
+  if(dk>0.4 && R()<0.3){ // small puddle catching streetlight glow at night
+    const px=sx+R()*BLOCK*0.3-14, py=sy-R()*10-4;
+    g.fillStyle=`rgba(255,220,160,${0.1+dk*0.12})`;
+    g.beginPath();g.ellipse(px,py,10,5,0,0,TAU);g.fill();
+  }
+  const items=1+Math.floor(R()*2);
+  for(let e=0;e<items;e++){
+    const side=Math.floor(R()*4);
+    let px,py;
+    if(side===0){px=sx+R()*BLOCK;py=sy-9;}
+    else if(side===1){px=sx+BLOCK+9;py=sy+R()*BLOCK;}
+    else if(side===2){px=sx+R()*BLOCK;py=sy+BLOCK+9;}
+    else{px=sx-9;py=sy+R()*BLOCK;}
+    const roll=R();
+    if(roll<0.2){ // trash can
+      g.fillStyle='#3a3a38';g.fillRect(px-4,py-7,8,10);
+      g.fillStyle='#222';g.fillRect(px-5,py-9,10,3);
+    } else if(roll<0.34){ // fire hydrant
+      g.fillStyle='#b3352c';g.fillRect(px-3,py-8,6,9);
+      g.fillStyle='#8a241d';g.fillRect(px-4,py-3,8,3);
+    } else if(roll<0.45 && (d==='suburb'||d==='oldtown'||d==='downtown')){ // parked bicycle
+      g.strokeStyle='rgba(200,200,200,.7)';g.lineWidth=1.4;
+      g.beginPath();g.arc(px-5,py+3,4,0,TAU);g.stroke();
+      g.beginPath();g.arc(px+5,py+3,4,0,TAU);g.stroke();
+      g.beginPath();g.moveTo(px-5,py+3);g.lineTo(px,py-4);g.lineTo(px+5,py+3);g.lineTo(px-1,py-4);g.stroke();
+    } else if(roll<0.53 && (d==='downtown'||d==='harbor')){ // little market stall awning
+      const stallColors=['#ff6a3f','#3fa0ff','#ffd23f'];
+      g.fillStyle=stallColors[Math.floor(R()*stallColors.length)];
+      g.fillRect(px-10,py-11,20,6);
+      g.fillStyle='#3a2a1a';g.fillRect(px-8,py-5,4,9);g.fillRect(px+4,py-5,4,9);
+    } else if(roll<0.6){ // bus stop sign
+      g.strokeStyle='#8a8a86';g.lineWidth=2;g.beginPath();g.moveTo(px,py+8);g.lineTo(px,py-9);g.stroke();
+      g.fillStyle='#2f6fa8';g.fillRect(px-6,py-9,12,7);
+    } else if(roll<0.7){ // scattered litter
+      g.fillStyle=`rgba(60,55,45,${.5-dk*.2})`;
+      g.beginPath();g.arc(px,py,2,0,TAU);g.arc(px+4,py+2,1.6,0,TAU);g.arc(px-3,py+1,1.4,0,TAU);g.fill();
+    }
+  }
+}
+function drawIslandBlock(i,j,sx,sy,dk){
+  // sandy beach ring around the hut's little plot
+  g.fillStyle=`rgb(${196-dk*70},${172-dk*62},${118-dk*44})`;
+  g.beginPath();g.ellipse(sx+BLOCK/2,sy+BLOCK/2,BLOCK*.62,BLOCK*.6,0,0,TAU);g.fill();
+  const R=mulberry(i*5279+j*1109+13);
+  const theme=Math.floor(R()*5); // 0 plain, 1 lighthouse, 2 crashed plane, 3 broken bridge, 4 shack village
+  const rocks=4+Math.floor(R()*4);
+  for(let k=0;k<rocks;k++){
+    const ra=R()*TAU, rd=BLOCK*.56+R()*14;
+    const rx=sx+BLOCK/2+Math.cos(ra)*rd, ry=sy+BLOCK/2+Math.sin(ra)*rd*.96;
+    g.fillStyle='rgba(90,86,80,.6)';
+    g.beginPath();g.ellipse(rx,ry,5+R()*5,4+R()*3,ra,0,TAU);g.fill();
+  }
+  // tiny dock jutting into the water on one side
+  const da=R()*TAU;
+  const dx0=sx+BLOCK/2+Math.cos(da)*BLOCK*.5, dy0=sy+BLOCK/2+Math.sin(da)*BLOCK*.48;
+  g.save();g.translate(dx0,dy0);g.rotate(da);
+  g.fillStyle='#6b5238';g.fillRect(0,-6,38,12);
+  g.strokeStyle='rgba(0,0,0,.3)';g.lineWidth=1;
+  for(let p2=4;p2<38;p2+=8){g.beginPath();g.moveTo(p2,-6);g.lineTo(p2,6);g.stroke();}
+  g.restore();
+  // beached boat
+  if(R()<0.6){
+    const ba=R()*TAU, bd=BLOCK*.5;
+    const bxp=sx+BLOCK/2+Math.cos(ba)*bd, byp=sy+BLOCK/2+Math.sin(ba)*bd*.9;
+    g.save();g.translate(bxp,byp);g.rotate(ba+Math.PI/2);
+    g.fillStyle='#8a4a34';g.beginPath();g.ellipse(0,0,16,7,0,0,TAU);g.fill();
+    g.fillStyle='#5c2e1e';g.beginPath();g.ellipse(0,0,10,4,0,0,TAU);g.fill();
+    g.restore();
+  }
+  // interior landmark, one per island
+  const cx2=sx+BLOCK*(0.3+R()*0.15), cy2=sy+BLOCK*(0.55+R()*0.15);
+  if(theme===1){ // lighthouse with a slowly rotating beam
+    g.fillStyle='#e8e2d0';g.fillRect(cx2-6,cy2-40,12,40);
+    g.fillStyle='#c0392b';g.fillRect(cx2-7,cy2-44,14,6);
+    const beamA=(performance.now()/1400)%TAU;
+    g.save();g.globalCompositeOperation='lighter';g.globalAlpha=dk>0.3?0.32:0.08;
+    const bg=g.createRadialGradient(cx2,cy2-42,2,cx2,cy2-42,150);
+    bg.addColorStop(0,'#fff7c0');bg.addColorStop(1,'rgba(255,247,192,0)');
+    g.translate(cx2,cy2-42);g.rotate(beamA);
+    g.fillStyle=bg;g.beginPath();g.moveTo(0,0);g.arc(0,0,150,-0.18,0.18);g.closePath();g.fill();
+    g.restore();
+  } else if(theme===2){ // crashed plane fuselage
+    g.save();g.translate(cx2,cy2);g.rotate(R()*TAU);
+    g.fillStyle='#5a6068';g.fillRect(-30,-4,60,8);
+    g.fillRect(-6,-20,10,40);
+    g.fillStyle='#2a2e32';g.beginPath();g.arc(28,0,5,0,TAU);g.fill();
+    g.restore();
+  } else if(theme===3){ // broken bridge stub, going nowhere
+    g.fillStyle='#7a6a54';
+    g.fillRect(cx2-40,cy2-6,34,12);
+    g.fillStyle='rgba(0,0,0,.3)';g.fillRect(cx2-8,cy2-8,4,16);
+  } else if(theme===4){ // extra abandoned shacks
+    for(let s2=0;s2<2;s2++){
+      const shx=cx2+(s2?26:-10), shy=cy2+(s2?10:-14);
+      g.fillStyle='#8a6a4a';g.fillRect(shx-9,shy-8,18,14);
+      g.fillStyle='#5c4530';g.beginPath();g.moveTo(shx-11,shy-8);g.lineTo(shx,shy-16);g.lineTo(shx+11,shy-8);g.closePath();g.fill();
+    }
+  }
+  // gentle animated shoreline ripple ring
+  const rt=(performance.now()/1000)%3;
+  g.strokeStyle=`rgba(255,255,255,${(1-rt/3)*0.18})`;g.lineWidth=1.5;
+  g.beginPath();g.ellipse(sx+BLOCK/2,sy+BLOCK/2,BLOCK*.62+rt*10,BLOCK*.6+rt*9,0,0,TAU);g.stroke();
+}
+function drawRoofDetails(b,idx,sx,sy,dk){
+  // seen from directly above, so these sit inside the building's own footprint rather than "above" it
+  const R=mulberry(idx*7793+17);
+  if(b.acUnits>0){
+    for(let k=0;k<b.acUnits;k++){
+      const ax=sx+b.w*(0.15+R()*0.6), ay=sy+b.h*(0.15+R()*0.6);
+      g.fillStyle='rgba(0,0,0,.25)'; g.fillRect(ax-5,ay-3,10,7);
+      g.fillStyle='#9a9a96'; g.fillRect(ax-6,ay-6,12,7);
+      g.strokeStyle='rgba(0,0,0,.3)';g.lineWidth=1;
+      for(let l=-4;l<=4;l+=2){g.beginPath();g.moveTo(ax+l,ay-6);g.lineTo(ax+l,ay+1);g.stroke();}
+    }
+  }
+  if(b.vents){
+    const vx=sx+b.w*(0.2+R()*0.5), vy=sy+b.h*(0.2+R()*0.5);
+    g.fillStyle='#6b6459';g.beginPath();g.arc(vx,vy,4,0,TAU);g.fill();
+    g.fillStyle='#3a3630';g.beginPath();g.arc(vx,vy,2,0,TAU);g.fill();
+  }
+  if(b.watertower){
+    const tx=sx+b.w*(0.2+R()*0.5), ty=sy+b.h*(0.25+R()*0.4);
+    g.fillStyle='rgba(0,0,0,.22)';g.beginPath();g.ellipse(tx+2,ty+8,11,4,0,0,TAU);g.fill();
+    g.strokeStyle='#6b5a46';g.lineWidth=1.5;
+    g.beginPath();g.moveTo(tx-7,ty+8);g.lineTo(tx-4,ty-2);g.moveTo(tx+7,ty+8);g.lineTo(tx+4,ty-2);g.stroke();
+    g.fillStyle='#8a7256';
+    g.beginPath();g.ellipse(tx,ty-4,9,7,0,0,TAU);g.fill();
+    g.fillStyle=shade('#8a7256',-24);
+    g.beginPath();g.moveTo(tx-9,ty-4);g.lineTo(tx,ty-14);g.lineTo(tx+9,ty-4);g.closePath();g.fill();
+  }
+  if(b.dish){
+    const dx2=sx+b.w*(0.6+R()*0.25), dy2=sy+b.h*(0.2+R()*0.5);
+    g.strokeStyle='#888';g.lineWidth=2; g.beginPath();g.moveTo(dx2,dy2);g.lineTo(dx2+4,dy2-6);g.stroke();
+    g.fillStyle='#c8c8c4'; g.beginPath();g.ellipse(dx2,dy2-6,6,4.5,0.4,0,TAU);g.fill();
+    g.strokeStyle='rgba(0,0,0,.25)';g.lineWidth=1;g.stroke();
+  }
+  if(b.solar){
+    const gx2=sx+b.w*0.25, gy2=sy+b.h*0.25, gw2=b.w*0.5, gh2=b.h*0.35;
+    g.fillStyle='#1a2c48';g.fillRect(gx2,gy2,gw2,gh2);
+    g.strokeStyle='rgba(150,190,255,.4)';g.lineWidth=1;
+    for(let c=1;c<4;c++){g.beginPath();g.moveTo(gx2+gw2*c/4,gy2);g.lineTo(gx2+gw2*c/4,gy2+gh2);g.stroke();}
+    for(let r2=1;r2<3;r2++){g.beginPath();g.moveTo(gx2,gy2+gh2*r2/3);g.lineTo(gx2+gw2,gy2+gh2*r2/3);g.stroke();}
+  }
+  if(b.laundry){
+    const lx=sx+b.w*0.2, ly=sy+b.h*(0.3+R()*0.35), lw=b.w*0.6;
+    g.strokeStyle='rgba(255,255,255,.35)';g.lineWidth=1;
+    g.beginPath();g.moveTo(lx,ly);g.lineTo(lx+lw,ly);g.stroke();
+    const colors=['#e8e0d0','#c85050','#4a78c0','#e0c840'];
+    for(let c=0;c<4;c++){
+      g.fillStyle=colors[Math.floor(R()*colors.length)];
+      g.fillRect(lx+lw*c/4+2,ly,6,7);
+    }
+  }
+  if(b.pigeons && dk<0.35){
+    for(let k=0;k<1+Math.floor(R()*2);k++){
+      const px=sx+R()*b.w, py=sy+R()*b.h;
+      g.fillStyle='#57565c';
+      g.beginPath();g.ellipse(px,py,2.4,1.6,0,0,TAU);g.fill();
+    }
+  }
+}
+function drawTreeSprite(t,sx,sy,dk,sv){
+  const type=t.type||'round';
+  const R=mulberry(((t.x*131)|0)+((t.y*7)|0));
+  const sway=Math.sin(performance.now()/900+t.x)*2;
+  // ground contact shadow, shifts with sun direction like buildings do
+  g.fillStyle=`rgba(0,0,0,${.22-dk*.12})`;
+  g.beginPath();g.ellipse(sx+sv.x*10,sy+sv.y*10,t.r,t.r*.75,0,0,TAU);g.fill();
+  if(type==='palm'){
+    const lean=Math.sin(t.x*.01)*3;
+    g.strokeStyle=`rgb(${90-dk*30},${68-dk*24},${40-dk*14})`;g.lineWidth=Math.max(2,t.r*.22);g.lineCap='round';
+    g.beginPath();g.moveTo(sx,sy);g.lineTo(sx+lean,sy-t.r*.3);g.stroke();
+    const fronds=6;
+    for(let k=0;k<fronds;k++){
+      const fa=k/fronds*TAU+R()*0.3;
+      g.fillStyle=`rgb(${34-dk*14},${118-dk*46},${52-dk*16})`;
+      g.save();g.translate(sx+lean,sy-t.r*.3);g.rotate(fa+sway*0.02);
+      g.beginPath();g.ellipse(t.r*.6,0,t.r*.62,t.r*.22,0,0,TAU);g.fill();
+      g.restore();
+    }
+    g.fillStyle=`rgb(${44-dk*16},${138-dk*50},${62-dk*18})`;
+    g.beginPath();g.arc(sx+lean,sy-t.r*.3,t.r*.3,0,TAU);g.fill();
+    return;
+  }
+  if(type==='dead'){
+    g.strokeStyle=`rgb(${70-dk*24},${60-dk*20},${48-dk*16})`;g.lineWidth=2;g.lineCap='round';
+    const branches=4+Math.floor(R()*2);
+    for(let k=0;k<branches;k++){
+      const ba=k/branches*TAU+R()*0.6;
+      g.beginPath();g.moveTo(sx,sy);g.lineTo(sx+Math.cos(ba)*t.r,sy+Math.sin(ba)*t.r*.7);g.stroke();
+    }
+    if(R()<0.5){ g.fillStyle=`rgba(90,90,60,${.5-dk*.2})`; g.beginPath();g.arc(sx+t.r*.3,sy-t.r*.2,t.r*.28,0,TAU);g.fill(); }
+    return;
+  }
+  if(type==='pine'){
+    g.fillStyle=`rgb(${18-dk*8},${58-dk*24},${28-dk*10})`;
+    g.beginPath();
+    const spikes=9;
+    for(let k=0;k<spikes;k++){
+      const a2=k/spikes*TAU, rad=t.r*(k%2===0?1:0.72);
+      const px=sx+Math.cos(a2)*rad, py=sy+Math.sin(a2)*rad*.9;
+      if(k===0)g.moveTo(px,py); else g.lineTo(px,py);
+    }
+    g.closePath();g.fill();
+    g.fillStyle=`rgb(${28-dk*10},${84-dk*34},${40-dk*14})`;
+    g.beginPath();g.arc(sx-t.r*.2,sy-t.r*.2,t.r*.5,0,TAU);g.fill();
+    return;
+  }
+  // 'round' default — layered leafy canopy: darker base, sway-shifted mid, lighter highlight on top
+  g.fillStyle=`rgb(${30-dk*10},${96-dk*40},${34-dk*12})`;
+  g.beginPath();g.arc(sx+sway,sy,t.r,0,TAU);g.fill();
+  g.fillStyle=`rgb(${24-dk*8},${80-dk*34},${30-dk*10})`;
+  g.beginPath();g.arc(sx+sway+t.r*.3,sy+t.r*.28,t.r*.55,0,TAU);g.fill();
+  g.fillStyle=`rgb(${40-dk*12},${116-dk*46},${44-dk*14})`;
+  g.beginPath();g.arc(sx+sway-t.r*.28,sy-t.r*.28,t.r*.6,0,TAU);g.fill();
 }
 
 // ---------------------- rendering: entities ----------------------
@@ -3067,10 +3455,13 @@ function drawPed(p){
     g.beginPath();g.arc(p.size*1.3,0,p.size*.55,0,TAU);g.fill();
     g.globalAlpha=1;g.restore();return;
   }
-  g.save();g.translate(sx,sy);g.rotate(p.a+Math.PI/2);
-  // shadow
+  const effA=p.a+Math.PI/2;
+  g.save();g.translate(sx,sy);g.rotate(effA);
+  // shadow — nudged by the sun direction so it shifts slightly through the day, like building/car shadows
+  const psv=sunVec();
+  const pshx=Math.cos(effA)*psv.x*3+Math.sin(effA)*psv.y*3, pshy=-Math.sin(effA)*psv.x*3+Math.cos(effA)*psv.y*3;
   g.fillStyle='rgba(0,0,0,.3)';
-  g.beginPath();g.ellipse(2,2,p.size,p.size*.8,0,0,TAU);g.fill();
+  g.beginPath();g.ellipse(2+pshx,2+pshy,p.size,p.size*.8,0,0,TAU);g.fill();
   // swinging limbs
   const sw=Math.sin(p.phase)*p.size*.7;
   g.strokeStyle=shade2(p.color,-40);g.lineWidth=3.4;g.lineCap='round';
@@ -3126,9 +3517,12 @@ function drawCar(c){
                   life:.2,max:.2,c:pick(['#ffd23f','#ff8830','#4fb0ff']),s:rnd(3,6),glow:true});
     }
   }
-  // shadow under body — airborne vehicles cast a small drifting shadow instead of sitting flush on it
+  // shadow under body — airborne vehicles cast a small drifting shadow instead of sitting flush on it;
+  // nudged by the sun direction (un-rotated into the car's local space) so it shifts slightly through the day
+  const csv=sunVec();
+  const cshx=Math.cos(c.a)*csv.x*4+Math.sin(c.a)*csv.y*4, cshy=-Math.sin(c.a)*csv.x*4+Math.cos(c.a)*csv.y*4;
   g.fillStyle=c.cls==='air'?'rgba(0,0,0,.25)':'rgba(0,0,0,.35)';
-  g.beginPath();g.ellipse(c.cls==='air'?6:2,c.cls==='air'?8:3,c.l/2+3,c.w/2+3,0,0,TAU);g.fill();
+  g.beginPath();g.ellipse((c.cls==='air'?6:2)+cshx,(c.cls==='air'?8:3)+cshy,c.l/2+3,c.w/2+3,0,0,TAU);g.fill();
   // wheels — boats, aircraft and the tracked APC don't have them
   if(c.cls!=='water'&&c.cls!=='air'&&c.type!=='apc'){
     g.fillStyle='#111';
@@ -4255,6 +4649,7 @@ function frame(now){
     }
     carVsCar();
     updatePeds(dt);
+    updateAmbientPeds(dt);
     updateBullets(dt);
     updateRockets(dt);
     updateBombs(dt);
@@ -4358,6 +4753,7 @@ function frame(now){
     g.restore();
   }
   for(const p of peds)drawPed(p);
+  for(const p of ambientPeds) if(p.state!=='inside') drawPed(p);
   for(const c of cars)drawCar(c);
   drawPlayer();
   drawParticlesAndBullets();
